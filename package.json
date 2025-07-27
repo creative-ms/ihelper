@@ -1,0 +1,101 @@
+{
+    "name": "instaclickpos",
+    "private": true,
+    "version": "1.0.0",
+    "type": "module",
+    "main": "electron.cjs",
+    "scripts": {
+        "dev": "vite",
+        "build": "vite build",
+        "electron:dev": "concurrently \"npm run dev\" \"wait-on http://localhost:5173 && electron .\"",
+        "electron:build": "npm run build && electron-builder",
+        "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
+        "preview": "vite preview",
+        "seed": "node seed.js"
+    },
+    "dependencies": {
+        "@faker-js/faker": "^9.9.0",
+        "@headlessui/react": "^2.2.4",
+        "@heroicons/react": "^2.1.3",
+        "axios": "^1.10.0",
+        "bcryptjs": "^3.0.2",
+        "chart.js": "^4.5.0",
+        "date-fns": "^4.1.0",
+        "dexie": "^4.0.11",
+        "electron-store": "^8.2.0",
+        "events": "^3.3.0",
+        "framer-motion": "^12.22.0",
+        "global": "^4.4.0",
+        "jspdf": "^3.0.1",
+        "jspdf-autotable": "^5.0.2",
+        "keytar": "^7.9.0",
+        "lodash": "^4.17.21",
+        "lucide-react": "^0.523.0",
+        "meilisearch": "^0.51.0",
+        "node-fetch": "^2.7.0",
+        "node-machine-id": "^1.1.12",
+        "pouchdb-browser": "^9.0.0",
+        "pouchdb-find": "^9.0.0",
+        "pouchdb-upsert": "^2.2.0",
+        "prop-types": "^15.8.1",
+        "qrcode.react": "^4.2.0",
+        "react": "^18.2.0",
+        "react-chartjs-2": "^5.3.0",
+        "react-csv": "^2.2.2",
+        "react-dom": "^18.2.0",
+        "react-router-dom": "^6.23.1",
+        "react-to-print": "^3.1.0",
+        "react-window": "^1.8.11",
+        "react-window-infinite-loader": "^1.0.10",
+        "zustand": "^5.0.6"
+    },
+    "devDependencies": {
+        "@types/react": "^18.2.66",
+        "@types/react-dom": "^18.2.22",
+        "@vitejs/plugin-react": "^4.2.1",
+        "autoprefixer": "^10.4.19",
+        "concurrently": "^9.2.0",
+        "electron": "^37.2.3",
+        "electron-builder": "^26.0.12",
+        "eslint": "^8.57.0",
+        "eslint-plugin-react": "^7.34.1",
+        "eslint-plugin-react-hooks": "^4.6.0",
+        "eslint-plugin-react-refresh": "^0.4.6",
+        "postcss": "^8.4.38",
+        "tailwindcss": "^3.4.3",
+        "vite": "^5.2.0",
+        "wait-on": "^8.0.3"
+    },
+    "build": {
+        "appId": "com.imad.posapp",
+        "productName": "Pharm Assist POS",
+        "files": [
+            "dist/**/*",
+            "electron.cjs",
+            "AdvancedLicenseService.cjs",
+            "preload.js",
+            "!src",
+            "!**/*.map",
+            "!**/test/**",
+            "!**/.cache",
+            "!**/README.md",
+            "node_modules/**/*"
+        ],
+        "extraResources": [
+            {
+                "from": "resources/meilisearch.exe",
+                "to": "meilisearch.exe"
+            }
+        ],
+        "directories": {
+            "output": "release"
+        },
+        "win": {
+            "target": "nsis"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true
+        }
+    }
+}
