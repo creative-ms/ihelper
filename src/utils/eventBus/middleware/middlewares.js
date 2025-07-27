@@ -109,7 +109,7 @@ export const validationMiddleware = async (event) => {
 export const rateLimitingMiddleware = (() => {
   const eventCounts = new Map();
   const timeWindow = 60000; // 1 minute
-  const maxEventsPerWindow = 100;
+  const maxEventsPerWindow = 1000;
 
   return async (event) => {
     const now = Date.now();

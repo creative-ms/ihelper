@@ -16,11 +16,15 @@ export function createPharmacyEventBus() {
   // Setup enhanced middlewares
   setupPharmacyMiddlewares(eventBus);
   
-  // Setup pharmacy-specific middlewares
+  // Setup pharmacy-specific middlewares with null checks
   eventBus.use(async (event) => {
-    // Performance monitoring middleware
-    if (event.name.includes('inventory') || event.name.includes('sales')) {
-      console.log(`📊 Processing ${event.name} with ${event.payload ? Object.keys(event.payload).length : 0} payload keys`);
+    // Performance monitoring middleware with safety checks
+    if (event && event.name && typeof event.name === 'string') {
+      if (event.name.includes('inventory') || event.name.includes('sales')) {
+        console.log(`📊 Processing ${event.name} with ${event.payload ? Object.keys(event.payload).length : 0} payload keys`);
+      }
+    } else {
+      console.warn('⚠️ Event with undefined or invalid name received:', event);
     }
     return true;
   });

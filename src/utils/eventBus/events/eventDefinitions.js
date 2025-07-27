@@ -12,12 +12,15 @@ export const PHARMACY_EVENTS = {
     BATCH_ADDED: 'inventory:batch:added',
     BATCH_UPDATED: 'inventory:batch:updated',
     BATCH_REMOVED: 'inventory:batch:removed',
+    BATCH_CREATED: 'inventory:batch:created',
+    STOCK_UPDATED: 'inventory:stock:updated',
     STOCK_LOW: 'inventory:stock:low',
     STOCK_OUT: 'inventory:stock:out',
     STOCK_RESERVED: 'inventory:stock:reserved',
     STOCK_RELEASED: 'inventory:stock:released',
     STOCK_REDUCED: 'inventory:stock:reduced',
     STOCK_RESTORED: 'inventory:stock:restored',
+    LOW_STOCK_ALERT: 'inventory:low_stock:alert',
     EXPIRY_WARNING: 'inventory:expiry:warning',
     SYNC_REQUIRED: 'inventory:sync:required'
   },
@@ -27,11 +30,30 @@ export const PHARMACY_EVENTS = {
     SALE_STARTED: 'sales:sale:started',
     ITEM_ADDED: 'sales:item:added',
     ITEM_REMOVED: 'sales:item:removed',
+    CART_CLEARED: 'sales:cart:cleared',
     DISCOUNT_APPLIED: 'sales:discount:applied',
+    TRANSACTION_COMPLETED: 'sales:transaction:completed',
+    PAYMENT_PROCESSED: 'sales:payment:processed',
+    RECEIPT_GENERATED: 'sales:receipt:generated',
     SALE_COMPLETED: 'sales:sale:completed',
     SALE_CANCELLED: 'sales:sale:cancelled',
     REFUND_PROCESSED: 'sales:refund:processed',
     PAYMENT_RECEIVED: 'sales:payment:received'
+  },
+
+  // Product Events
+  PRODUCT: {
+    CREATED: 'product:created',
+    UPDATED: 'product:updated',
+    DELETED: 'product:deleted',
+    BARCODE_SCANNED: 'product:barcode:scanned',
+    UNIT_CONVERSION_APPLIED: 'product:unit:converted',
+    EXPIRY_CHECK_PERFORMED: 'product:expiry:checked',
+    BATCH_EXPIRED: 'product:batch:expired',
+    BATCH_EXPIRING_SOON: 'product:batch:expiring_soon',
+    FEFO_APPLIED: 'product:fefo:applied',
+    PRICE_UPDATED: 'product:price:updated',
+    DISCOUNT_APPLIED: 'product:discount:applied'
   },
 
   // Customer Events
@@ -39,6 +61,7 @@ export const PHARMACY_EVENTS = {
     CREATED: 'customer:created',
     UPDATED: 'customer:updated',
     DELETED: 'customer:deleted',
+    TRANSACTION_RECORDED: 'customer:transaction:recorded',
     BALANCE_UPDATED: 'customer:balance:updated',
     PAYMENT_MADE: 'customer:payment:made'
   },
@@ -56,6 +79,18 @@ export const PHARMACY_EVENTS = {
     CUSTOMER_DISCOUNT_APPLIED: 'cart:customer_discount:applied',
     TAX_CALCULATED: 'cart:tax:calculated',
     TOTAL_RECALCULATED: 'cart:total:recalculated'
+  },
+
+  // Dashboard Events
+  DASHBOARD: {
+    INITIALIZED: 'dashboard:initialized',
+    DEACTIVATED: 'dashboard:deactivated',
+    DATA_REFRESHED: 'dashboard:data:refreshed',
+    DATA_REFRESH_NEEDED: 'dashboard:data:refresh_needed',
+    CACHE_CLEARED: 'dashboard:cache:cleared',
+    FILTER_CHANGED: 'dashboard:filter:changed',
+    EXPORT_REQUESTED: 'dashboard:export:requested',
+    REPORT_GENERATED: 'dashboard:report:generated'
   },
 
   // 🔋 HARDWARE EVENTS (for POS systems)
@@ -104,29 +139,6 @@ export const PHARMACY_EVENTS = {
     OFFLINE_CHANGES_SYNCED: 'sync:offline:synced'
   },
 
-  // 📊 DASHBOARD & ANALYTICS EVENTS
-  DASHBOARD: {
-    INITIALIZED: 'dashboard:initialized',
-    DEACTIVATED: 'dashboard:deactivated',
-    DATA_REFRESHED: 'dashboard:data:refreshed',
-    CACHE_CLEARED: 'dashboard:cache:cleared',
-    FILTER_CHANGED: 'dashboard:filter:changed',
-    EXPORT_REQUESTED: 'dashboard:export:requested',
-    REPORT_GENERATED: 'dashboard:report:generated'
-  },
-
-  // 🏷️ ENHANCED PRODUCT EVENTS
-  PRODUCT: {
-    BARCODE_SCANNED: 'product:barcode:scanned',
-    UNIT_CONVERSION_APPLIED: 'product:unit:converted',
-    EXPIRY_CHECK_PERFORMED: 'product:expiry:checked',
-    BATCH_EXPIRED: 'product:batch:expired',
-    BATCH_EXPIRING_SOON: 'product:batch:expiring_soon',
-    FEFO_APPLIED: 'product:fefo:applied',
-    PRICE_UPDATED: 'product:price:updated',
-    DISCOUNT_APPLIED: 'product:discount:applied'
-  },
-
   // 💰 FINANCIAL EVENTS
   FINANCE: {
     CASH_COUNTED: 'finance:cash:counted',
@@ -173,6 +185,7 @@ export const PHARMACY_EVENTS = {
   // 🚨 ALERT & NOTIFICATION EVENTS
   ALERTS: {
     LOW_STOCK_ALERT: 'alert:stock:low',
+    LOW_STOCK_DETECTED: 'alert:stock:low_detected',
     OUT_OF_STOCK_ALERT: 'alert:stock:out',
     EXPIRY_ALERT: 'alert:expiry:warning',
     PRICE_CHANGE_ALERT: 'alert:price:changed',
@@ -192,12 +205,15 @@ export const PHARMACY_EVENTS = {
     SYNC_SERVER_UNAVAILABLE: 'network:sync:unavailable'
   },
 
-  // System Events
+  // System Events - FIXED: Added missing system events
   SYSTEM: {
     CACHE_UPDATED: 'system:cache:updated',
     SYNC_STARTED: 'system:sync:started',
     SYNC_COMPLETED: 'system:sync:completed',
     ERROR_OCCURRED: 'system:error:occurred',
-    PERFORMANCE_WARNING: 'system:performance:warning'
+    PERFORMANCE_WARNING: 'system:performance:warning',
+    ADAPTER_INITIALIZED: 'system:adapter:initialized',
+    STORE_STATE_CHANGED: 'system:store:state_changed',
+    STORES_SYNCED: 'system:stores:synced'
   }
 };

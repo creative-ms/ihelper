@@ -47,6 +47,16 @@ export {
   EventMetricsCollector
 } from './utils/eventHelpers.js';
 
+// Import for default export
+import { EventBus } from './core/EventBus.js';
+import { PHARMACY_EVENTS } from './events/eventDefinitions.js';
+import { PharmacyTransactionManager } from './managers/PharmacyTransactionManager.js';
+import { 
+  createPharmacyEventBus, 
+  getGlobalEventBus, 
+  destroyGlobalEventBus 
+} from './factory/eventBusFactory.js';
+
 // Default export
 export default {
   EventBus,
