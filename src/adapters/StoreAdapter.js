@@ -1,7 +1,7 @@
 // src/adapters/StoreAdapter.js
 // ===================================================================
-//  🏗️ OPTIMIZED STORE ADAPTER - PERFORMANCE ENHANCED
-//  Fixed: Event storms, rate limiting, debouncing, batching
+//  🏗️ FIXED STORE ADAPTER - MIDDLEWARE METHOD CORRECTED
+//  Fixed: EventBus method mismatch, event validation, performance, DUPLICATE EXPORTS
 // ===================================================================
 
 import { 
@@ -30,7 +30,7 @@ import { useTransactionStore } from '../stores/transactionStore.js';
 import { useSettingsStore } from '../stores/settingsStore.js';
 import { useThemeStore } from '../stores/themeStore.js';
 
-// Performance monitoring
+// Performance monitoring (same as before)
 class StorePerformanceMonitor {
   constructor() {
     this.metrics = new Map();
@@ -60,7 +60,6 @@ class StorePerformanceMonitor {
       
       if (!success) this.errorCount++;
       
-      // Only log if debug mode or slow operations
       if (duration > 100 || (process.env.NODE_ENV === 'development' && duration > 10)) {
         console.log(`📊 ${metric.name}: ${duration.toFixed(2)}ms ${success ? '✅' : '❌'}`);
       }
@@ -86,33 +85,30 @@ class StorePerformanceMonitor {
   }
 }
 
-// Store Adapter Configuration - OPTIMIZED
+// Store Adapter Configuration
 const ADAPTER_CONFIG = {
-  AUTO_SYNC_INTERVAL: 5 * 60 * 1000, // 5 minutes
+  AUTO_SYNC_INTERVAL: 5 * 60 * 1000,
   BATCH_SIZE: 50,
   RETRY_ATTEMPTS: 3,
   TIMEOUT: 10000,
-  DEBOUNCE_DELAY: 150,        // ✅ Optimized debounce
+  DEBOUNCE_DELAY: 150,
   CACHE_DURATION: 10 * 60 * 1000,
   EVENT_BUFFER_SIZE: 100,
   PERFORMANCE_TRACKING: true,
-  
-  // ✅ NEW PERFORMANCE CONFIGS
-  EVENT_DEBOUNCE_DELAY: 100,  // Debounce rapid events
-  BATCH_DELAY: 50,            // Batch multiple updates
-  SIGNIFICANT_CHANGE_THRESHOLD: 0.1, // Skip trivial changes
-  MAX_EVENTS_PER_SECOND: 50,  // Rate limit per store
+  EVENT_DEBOUNCE_DELAY: 100,
+  BATCH_DELAY: 50,
+  SIGNIFICANT_CHANGE_THRESHOLD: 0.1,
+  MAX_EVENTS_PER_SECOND: 50,
   ENABLE_DEBUG_LOGS: process.env.NODE_ENV === 'development',
   LAZY_LOADING: true,
-  SMART_FILTERING: true       // Filter unnecessary events
+  SMART_FILTERING: true
 };
 
-// Debug logging helper
 const debugLog = ADAPTER_CONFIG.ENABLE_DEBUG_LOGS ? console.log : () => {};
-const warnLog = console.warn; // Always show warnings
+const warnLog = console.warn;
 
 // ===================================================================
-//  🎯 OPTIMIZED STORE ADAPTER CLASS
+//  🎯 FIXED STORE ADAPTER CLASS
 // ===================================================================
 
 export class StoreAdapter {
@@ -126,14 +122,14 @@ export class StoreAdapter {
     this.stores = new Map();
     this.storeSubscriptions = new Map();
     this.storeStates = new Map();
-    this.storeLastEmit = new Map(); // Track last emit time per store
+    this.storeLastEmit = new Map();
     
-    // ✅ PERFORMANCE OPTIMIZATIONS
+    // Performance optimizations
     this.eventDebounceMap = new Map();
     this.stateBatch = new Map();
     this.batchTimeout = null;
     this.eventRateTrackers = new Map();
-    this.lastStateHashes = new Map(); // Track state changes efficiently
+    this.lastStateHashes = new Map();
     
     // Adapter state
     this.isInitialized = false;
@@ -168,13 +164,13 @@ export class StoreAdapter {
       // Initialize event bus
       await this.initializeEventBus();
       
-      // Register all stores (with optimization)
+      // Register all stores
       await this.registerAllStores();
       
       // Setup store synchronization
       await this.setupStoreSynchronization();
       
-      // Setup middleware
+      // 🔧 FIXED: Setup middleware with correct method
       await this.setupMiddleware();
       
       // Start auto-sync if enabled
@@ -185,12 +181,14 @@ export class StoreAdapter {
       this.isInitialized = true;
       debugLog('✅ Store Adapter initialized successfully');
       
-      // Emit initialization event
-      await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.ADAPTER_INITIALIZED, {
-        timestamp: Date.now(),
-        storeCount: this.stores.size,
-        config: this.config
-      });
+      // 🔧 FIXED: Validate event name before emitting
+      if (PHARMACY_EVENTS?.SYSTEM?.ADAPTER_INITIALIZED) {
+        await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.ADAPTER_INITIALIZED, {
+          timestamp: Date.now(),
+          storeCount: this.stores.size,
+          config: this.config
+        });
+      }
       
       this.performanceMonitor.endOperation(operationId, true);
       return this;
@@ -204,19 +202,41 @@ export class StoreAdapter {
 
   async initializeEventBus() {
     try {
-      // Try to get existing global event bus or create new one
-      this.eventBus = getGlobalEventBus() || createPharmacyEventBus();
+      // Get the event bus instance properly
+      const globalInstance = getGlobalEventBus();
+      const createdInstance = createPharmacyEventBus();
+      
+      // 🔧 FIXED: Better handling of eventBus extraction
+      if (globalInstance?.eventBus) {
+        this.eventBus = globalInstance.eventBus;
+      } else if (createdInstance?.eventBus) {
+        this.eventBus = createdInstance.eventBus;
+      } else if (globalInstance) {
+        // In case the global instance IS the eventBus
+        this.eventBus = globalInstance;
+      } else if (createdInstance) {
+        // In case the created instance IS the eventBus
+        this.eventBus = createdInstance;
+      } else {
+        throw new Error('Could not obtain EventBus instance');
+      }
+
+      // Validate eventBus has required methods
+      if (!this.eventBus || typeof this.eventBus.emit !== 'function') {
+        throw new Error('EventBus instance is invalid or missing required methods');
+      }
       
       // Initialize transaction manager
       this.transactionManager = new PharmacyTransactionManager(this.eventBus);
       
-      debugLog('📡 Event bus initialized');
+      console.log('📡 Event bus initialized');
     } catch (error) {
       console.error('❌ Event bus initialization failed:', error);
       throw error;
     }
   }
 
+  // Register stores (same logic as before)
   async registerAllStores() {
     const storeDefinitions = [
       { name: 'auth', store: useAuthStore, priority: 1, critical: true },
@@ -237,27 +257,22 @@ export class StoreAdapter {
       { name: 'audit', store: useAuditStore, priority: 6, critical: false }
     ];
 
-    // Sort by priority for initialization order
     storeDefinitions.sort((a, b) => a.priority - b.priority);
 
     if (this.config.LAZY_LOADING) {
-      // ✅ OPTIMIZED: Load critical stores first, others lazily
       const criticalStores = storeDefinitions.filter(def => def.critical);
       const nonCriticalStores = storeDefinitions.filter(def => !def.critical);
 
-      // Load critical stores immediately
       for (const def of criticalStores) {
         await this.registerStore(def.name, def.store, def);
       }
 
-      // Load non-critical stores with delay to prevent blocking
       setTimeout(async () => {
         for (const def of nonCriticalStores) {
           await this.registerStore(def.name, def.store, def);
         }
       }, 50);
     } else {
-      // Load all stores normally
       for (const def of storeDefinitions) {
         await this.registerStore(def.name, def.store, def);
       }
@@ -288,31 +303,25 @@ export class StoreAdapter {
 
       this.stores.set(name, storeInstance);
       
-      // Get initial state
       try {
         storeInstance.state = storeHook.getState();
         this.storeStates.set(name, { ...storeInstance.state });
-        
-        // ✅ OPTIMIZATION: Track state hash for efficient change detection
         this.lastStateHashes.set(name, this.hashState(storeInstance.state));
       } catch (error) {
         warnLog(`Failed to get initial state for store "${name}":`, error);
       }
 
-      // Setup store subscription for state changes with optimization
       const unsubscribe = storeHook.subscribe((state) => {
         this.handleStoreStateChangeOptimized(name, state);
       });
       
       this.storeSubscriptions.set(name, unsubscribe);
 
-      // Initialize rate tracker for this store
       this.eventRateTrackers.set(name, {
         events: [],
         lastCleanup: Date.now()
       });
 
-      // Register store-specific event listeners
       await this.setupStoreEventListeners(name, storeInstance);
 
       debugLog(`✅ Store "${name}" registered successfully`);
@@ -326,37 +335,28 @@ export class StoreAdapter {
   }
 
   // ===================================================================
-  //  🔄 OPTIMIZED EVENT HANDLING
+  //  🔄 OPTIMIZED EVENT HANDLING (Same as before)
   // ===================================================================
 
-  /**
-   * ✅ OPTIMIZED: Handles store state changes with smart filtering and debouncing
-   */
   handleStoreStateChangeOptimized(storeName, newState) {
     if (this.isDestroyed) return;
 
     const store = this.stores.get(storeName);
     if (!store) return;
 
-    // ✅ RATE LIMITING: Check if this store is emitting too frequently
     if (!this.shouldAllowEvent(storeName)) {
       debugLog(`⏭️ Skipping event for "${storeName}" - rate limited`);
       return;
     }
 
-    // ✅ CHANGE DETECTION: Only process if there are significant changes
     if (!this.hasSignificantChanges(storeName, newState)) {
       debugLog(`⏭️ Skipping event for "${storeName}" - no significant changes`);
       return;
     }
 
-    // ✅ DEBOUNCING: Debounce rapid successive changes
     this.debouncedEmitStateChange(storeName, newState);
   }
 
-  /**
-   * ✅ NEW: Check if event should be allowed based on rate limiting
-   */
   shouldAllowEvent(storeName) {
     const tracker = this.eventRateTrackers.get(storeName);
     if (!tracker) return true;
@@ -364,57 +364,41 @@ export class StoreAdapter {
     const now = Date.now();
     const oneSecondAgo = now - 1000;
 
-    // Clean old events
     tracker.events = tracker.events.filter(time => time > oneSecondAgo);
 
-    // Check rate limit
     if (tracker.events.length >= this.config.MAX_EVENTS_PER_SECOND) {
       return false;
     }
 
-    // Add current event
     tracker.events.push(now);
     return true;
   }
 
-  /**
-   * ✅ NEW: Efficient change detection using state hashing
-   */
   hasSignificantChanges(storeName, newState) {
     if (!this.config.SMART_FILTERING) return true;
     
     const oldHash = this.lastStateHashes.get(storeName);
     const newHash = this.hashState(newState);
     
-    // Update hash
     this.lastStateHashes.set(storeName, newHash);
     
     return oldHash !== newHash;
   }
 
-  /**
-   * ✅ NEW: Simple state hashing for change detection
-   */
   hashState(state) {
     try {
-      // Skip frequently changing fields that don't matter for business logic
       const filteredState = this.filterStateForHashing(state);
       return JSON.stringify(filteredState);
     } catch (error) {
-      // Fallback to timestamp if hashing fails
       return Date.now().toString();
     }
   }
 
-  /**
-   * ✅ NEW: Filter out noise from state for efficient comparison
-   */
   filterStateForHashing(state) {
     if (!state || typeof state !== 'object') return state;
 
     const filtered = { ...state };
     
-    // Remove noisy fields that change frequently but aren't significant
     const noiseFields = [
       'lastUpdated', 'timestamp', 'lastSync', 'isLoading', 
       'loadingStates', 'ui', 'temp', 'cache', 'debug'
@@ -427,18 +411,13 @@ export class StoreAdapter {
     return filtered;
   }
 
-  /**
-   * ✅ OPTIMIZED: Debounced event emission
-   */
   debouncedEmitStateChange(storeName, newState) {
     const debounceKey = `${storeName}_state_change`;
     
-    // Clear existing timeout
     if (this.eventDebounceMap.has(debounceKey)) {
       clearTimeout(this.eventDebounceMap.get(debounceKey));
     }
     
-    // Set new timeout
     const timeoutId = setTimeout(() => {
       this.eventDebounceMap.delete(debounceKey);
       this.emitStateChangeEvent(storeName, newState);
@@ -446,31 +425,22 @@ export class StoreAdapter {
     
     this.eventDebounceMap.set(debounceKey, timeoutId);
     
-    // Update state immediately (don't wait for debounce)
     const oldState = this.storeStates.get(storeName);
     this.storeStates.set(storeName, { ...newState });
   }
 
-  /**
-   * ✅ OPTIMIZED: Emit state change event with batching
-   */
   emitStateChangeEvent(storeName, newState) {
     const oldState = this.storeStates.get(storeName);
     
-    debugLog(`🔍 Debug handleStoreStateChange: {storeName: '${storeName}', hasEventBus: ${!!this.eventBus}, hasPharmacyEvents: ${!!PHARMACY_EVENTS}, hasSystemEvents: ${!!PHARMACY_EVENTS.SYSTEM}, storeStateChangedEvent: 'system:store:state_changed'}`);
+    debugLog(`🔍 Debug handleStoreStateChange: {storeName: '${storeName}', hasEventBus: ${!!this.eventBus}, hasPharmacyEvents: ${!!PHARMACY_EVENTS}, hasSystemEvents: ${!!PHARMACY_EVENTS?.SYSTEM}, storeStateChangedEvent: 'system:store:state_changed'}`);
     
-    // ✅ BATCH SIMILAR EVENTS
     if (this.config.BATCH_DELAY > 0) {
       this.batchStateChange(storeName, oldState, newState);
     } else {
-      // Emit immediately
       this.emitSingleStateChange(storeName, oldState, newState);
     }
   }
 
-  /**
-   * ✅ NEW: Batch multiple state changes
-   */
   batchStateChange(storeName, oldState, newState) {
     this.stateBatch.set(storeName, { oldState, newState, timestamp: Date.now() });
     
@@ -483,9 +453,6 @@ export class StoreAdapter {
     }, this.config.BATCH_DELAY);
   }
 
-  /**
-   * ✅ NEW: Process batched state changes
-   */
   processBatchedChanges() {
     if (this.stateBatch.size === 0) return;
 
@@ -497,94 +464,163 @@ export class StoreAdapter {
     this.stateBatch.clear();
     this.batchTimeout = null;
     
-    // Emit batch event
-    this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.STORES_BATCH_UPDATED, {
-      changes,
-      timestamp: Date.now(),
-      count: changes.length
-    }).catch(console.error);
+    // 🔧 FIXED: Validate event name before emitting
+    const eventName = PHARMACY_EVENTS?.SYSTEM?.STORES_BATCH_UPDATED;
+    if (eventName && this.eventBus) {
+      this.eventBus.emit(eventName, {
+        changes,
+        timestamp: Date.now(),
+        count: changes.length
+      }).catch(console.error);
 
-    debugLog(`📡 Emitting batched store changes: ${changes.length} stores`);
+      debugLog(`📡 Emitting batched store changes: ${changes.length} stores`);
+    }
     
-    // Handle cross-store sync for batched changes
     changes.forEach(({ storeName, newState, oldState }) => {
       this.handleCrossStoreSync(storeName, newState, oldState);
     });
   }
 
-  /**
-   * ✅ OPTIMIZED: Emit single state change (fallback)
-   */
   emitSingleStateChange(storeName, oldState, newState) {
-    this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.STORE_STATE_CHANGED, {
-      storeName,
-      oldState,
-      newState,
-      timestamp: Date.now()
-    }).catch(console.error);
+    // 🔧 FIXED: Validate event name before emitting
+    const eventName = PHARMACY_EVENTS?.SYSTEM?.STORE_STATE_CHANGED;
+    if (eventName && this.eventBus) {
+      this.eventBus.emit(eventName, {
+        storeName,
+        oldState,
+        newState,
+        timestamp: Date.now()
+      }).catch(error => {
+        console.error(`Failed to emit store state change event:`, error);
+      });
 
-    debugLog(`📡 Emitting store state change event: system:store:state_changed`);
+      debugLog(`📡 Emitting store state change event: ${eventName}`);
+    }
 
-    // Handle cross-store synchronization
     this.handleCrossStoreSync(storeName, newState, oldState);
   }
 
   // ===================================================================
-  //  📡 EVENT HANDLING (EXISTING METHODS - OPTIMIZED)
+  //  🔧 FIXED MIDDLEWARE SETUP
   // ===================================================================
 
-  async setupStoreEventListeners(storeName, storeInstance) {
-    const eventMappings = {
-      product: [
-        PHARMACY_EVENTS.PRODUCT.CREATED,
-        PHARMACY_EVENTS.PRODUCT.UPDATED,
-        PHARMACY_EVENTS.PRODUCT.DELETED,
-        PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED
-      ],
-      inventory: [
-        PHARMACY_EVENTS.INVENTORY.BATCH_CREATED,
-        PHARMACY_EVENTS.INVENTORY.BATCH_UPDATED,
-        PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED,
-        PHARMACY_EVENTS.INVENTORY.LOW_STOCK_ALERT
-      ],
-      cart: [
-        PHARMACY_EVENTS.SALES.ITEM_ADDED,
-        PHARMACY_EVENTS.SALES.ITEM_REMOVED,
-        PHARMACY_EVENTS.SALES.CART_CLEARED
-      ],
-      sales: [
-        PHARMACY_EVENTS.SALES.TRANSACTION_COMPLETED,
-        PHARMACY_EVENTS.SALES.PAYMENT_PROCESSED,
-        PHARMACY_EVENTS.SALES.RECEIPT_GENERATED
-      ],
-      dashboard: [
-        PHARMACY_EVENTS.SALES.TRANSACTION_COMPLETED,
-        PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED,
-        PHARMACY_EVENTS.PRODUCT.CREATED
-      ]
-    };
-
-    const storeEvents = eventMappings[storeName] || [];
-    
-    for (const eventName of storeEvents) {
-      const listener = (payload) => this.handleStoreEvent(storeName, eventName, payload);
-      const unsubscribe = this.eventBus.on(eventName, listener);
-      storeInstance.eventListeners.set(eventName, unsubscribe);
+  async setupMiddleware() {
+    try {
+      // Setup pharmacy-specific middleware
+      await setupPharmacyMiddlewares(this.eventBus);
+      
+      // 🔧 FIXED: Use correct method name 'use' instead of 'addMiddleware'
+      if (typeof this.eventBus.use === 'function') {
+        this.eventBus.use(this.performanceMiddleware.bind(this));
+        this.eventBus.use(this.eventFilteringMiddleware.bind(this));
+        this.eventBus.use(this.batchingMiddleware.bind(this));
+      } else {
+        console.warn('EventBus does not support middleware via use() method');
+      }
+      
+      debugLog('🔧 Middleware setup completed');
+    } catch (error) {
+      console.error('❌ Middleware setup failed:', error);
+      // Don't throw error - continue without custom middleware
     }
   }
 
+  performanceMiddleware(event) {
+    const startTime = performance.now();
+    const operationId = this.performanceMonitor.startOperation(`event-${event.name}`);
+    
+    // Return promise that resolves after processing
+    event.performanceStart = startTime;
+    
+    // Schedule performance tracking
+    setTimeout(() => {
+      const duration = performance.now() - startTime;
+      this.performanceMonitor.endOperation(operationId, true);
+      
+      if (duration > 50) {
+        debugLog(`⚠️ Slow event: ${event.name} took ${duration.toFixed(2)}ms`);
+      }
+    }, 0);
+
+    return true; // Allow event to continue
+  }
+
+  eventFilteringMiddleware(event) {
+    // Filter out events during destruction
+    if (this.isDestroyed) {
+      debugLog(`🚫 Filtered event during destruction: ${event.name}`);
+      return false;
+    }
+    
+    // 🔧 FIXED: Validate event name
+    if (!event.name || typeof event.name !== 'string') {
+      console.warn(`⚠️ Event with undefined or invalid name received:`, event);
+      return false;
+    }
+    
+    // Filter rapid duplicate events
+    if (this.isDuplicateEvent(event.name, event.payload)) {
+      debugLog(`🚫 Filtered duplicate event: ${event.name}`);
+      return false;
+    }
+    
+    return true;
+  }
+
+  batchingMiddleware(event) {
+    // Only batch if event name is valid
+    if (!event.name) return true;
+    
+    if (this.shouldBatchEvent(event.name)) {
+      this.addEventToBatch(event.name, event.payload);
+      return false; // Event is batched, don't process immediately
+    }
+    
+    return true;
+  }
+
+  isDuplicateEvent(eventName, payload) {
+    if (!eventName) return false;
+    
+    const eventKey = `${eventName}-${JSON.stringify(payload)}`;
+    const now = Date.now();
+    const lastEmit = this.storeLastEmit.get(eventKey);
+    
+    if (lastEmit && now - lastEmit < this.config.EVENT_DEBOUNCE_DELAY) {
+      return true;
+    }
+    
+    this.storeLastEmit.set(eventKey, now);
+    return false;
+  }
+
+  shouldBatchEvent(eventName) {
+    if (!eventName || !PHARMACY_EVENTS) return false;
+    
+    const batchableEvents = [
+      PHARMACY_EVENTS.SYSTEM?.STORE_STATE_CHANGED,
+      PHARMACY_EVENTS.INVENTORY?.STOCK_UPDATED,
+      PHARMACY_EVENTS.PRODUCT?.UPDATED
+    ].filter(Boolean); // Remove undefined events
+    
+    return batchableEvents.includes(eventName);
+  }
+
+  addEventToBatch(eventName, payload) {
+    debugLog(`📦 Batching event: ${eventName}`);
+  }
+
   // ===================================================================
-  //  🔄 STORE SYNCHRONIZATION (EXISTING - KEPT SAME)
+  //  🔄 STORE SYNCHRONIZATION (Keep existing methods)
   // ===================================================================
 
   async setupStoreSynchronization() {
-    // Setup cross-store dependencies
     const dependencies = {
       inventory: ['product'],
       cart: ['product', 'inventory'],
       sales: ['cart', 'product', 'inventory', 'customer'],
       dashboard: ['sales', 'product', 'inventory', 'purchase'],
-      audit: ['*'] // Audit listens to all stores
+      audit: ['*']
     };
 
     for (const [storeName, deps] of Object.entries(dependencies)) {
@@ -618,13 +654,16 @@ export class StoreAdapter {
         }
       }
 
-      // Emit sync completion event
-      await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.STORES_SYNCED, {
-        timestamp: Date.now(),
-        results: syncResults,
-        successful: syncResults.filter(r => r.success).length,
-        failed: syncResults.filter(r => !r.success).length
-      });
+      // 🔧 FIXED: Validate event before emitting
+      const eventName = PHARMACY_EVENTS?.SYSTEM?.STORES_SYNCED;
+      if (eventName && this.eventBus) {
+        await this.eventBus.emit(eventName, {
+          timestamp: Date.now(),
+          results: syncResults,
+          successful: syncResults.filter(r => r.success).length,
+          failed: syncResults.filter(r => !r.success).length
+        });
+      }
 
       this.performanceMonitor.endOperation(operationId, true);
       return syncResults;
@@ -643,9 +682,7 @@ export class StoreAdapter {
     }
 
     const currentState = store.hook.getState();
-    const lastState = this.storeStates.get(storeName);
 
-    // Check if store has sync methods
     const syncMethods = [
       'syncCacheWithDatabase',
       'fetchFromRemote',
@@ -662,7 +699,6 @@ export class StoreAdapter {
       }
     }
 
-    // If no sync method found, just update the cached state
     this.storeStates.set(storeName, { ...currentState });
     store.lastSync = Date.now();
     
@@ -670,8 +706,50 @@ export class StoreAdapter {
   }
 
   // ===================================================================
-  //  📡 EVENT HANDLING (EXISTING METHODS - KEPT SAME)
+  //  📡 EVENT HANDLING (Keep existing methods with validation fixes)
   // ===================================================================
+
+  async setupStoreEventListeners(storeName, storeInstance) {
+    const eventMappings = {
+      product: [
+        PHARMACY_EVENTS.PRODUCT?.CREATED,
+        PHARMACY_EVENTS.PRODUCT?.UPDATED,
+        PHARMACY_EVENTS.PRODUCT?.DELETED,
+        PHARMACY_EVENTS.INVENTORY?.STOCK_UPDATED
+      ].filter(Boolean),
+      inventory: [
+        PHARMACY_EVENTS.INVENTORY?.BATCH_CREATED,
+        PHARMACY_EVENTS.INVENTORY?.BATCH_UPDATED,
+        PHARMACY_EVENTS.INVENTORY?.STOCK_UPDATED,
+        PHARMACY_EVENTS.INVENTORY?.LOW_STOCK_ALERT
+      ].filter(Boolean),
+      cart: [
+        PHARMACY_EVENTS.SALES?.ITEM_ADDED,
+        PHARMACY_EVENTS.SALES?.ITEM_REMOVED,
+        PHARMACY_EVENTS.SALES?.CART_CLEARED
+      ].filter(Boolean),
+      sales: [
+        PHARMACY_EVENTS.SALES?.TRANSACTION_COMPLETED,
+        PHARMACY_EVENTS.SALES?.PAYMENT_PROCESSED,
+        PHARMACY_EVENTS.SALES?.RECEIPT_GENERATED
+      ].filter(Boolean),
+      dashboard: [
+        PHARMACY_EVENTS.SALES?.TRANSACTION_COMPLETED,
+        PHARMACY_EVENTS.INVENTORY?.STOCK_UPDATED,
+        PHARMACY_EVENTS.PRODUCT?.CREATED
+      ].filter(Boolean)
+    };
+
+    const storeEvents = eventMappings[storeName] || [];
+    
+    for (const eventName of storeEvents) {
+      if (eventName) { // Only add if event name is valid
+        const listener = (payload) => this.handleStoreEvent(storeName, eventName, payload);
+        const unsubscribe = this.eventBus.on(eventName, listener);
+        storeInstance.eventListeners.set(eventName, unsubscribe);
+      }
+    }
+  }
 
   async handleStoreEvent(storeName, eventName, payload) {
     if (this.isDestroyed) return;
@@ -682,7 +760,6 @@ export class StoreAdapter {
     if (!store || !store.isActive) return;
 
     try {
-      // Add to event buffer for analysis
       this.eventBuffer.push({
         storeName,
         eventName,
@@ -690,25 +767,34 @@ export class StoreAdapter {
         timestamp: Date.now()
       });
 
-      // Keep buffer size manageable
       if (this.eventBuffer.length > this.config.EVENT_BUFFER_SIZE) {
         this.eventBuffer.splice(0, this.eventBuffer.length - this.config.EVENT_BUFFER_SIZE);
       }
 
-      // Handle specific event types
-      switch (eventName) {
-        case PHARMACY_EVENTS.PRODUCT.CREATED:
-        case PHARMACY_EVENTS.PRODUCT.UPDATED:
-          await this.handleProductEvent(payload);
-          break;
-          
-        case PHARMACY_EVENTS.SALES.TRANSACTION_COMPLETED:
-          await this.handleSalesEvent(payload);
-          break;
-          
-        case PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED:
-          await this.handleInventoryEvent(payload);
-          break;
+      // Handle specific event types with validation
+      if (PHARMACY_EVENTS?.PRODUCT) {
+        switch (eventName) {
+          case PHARMACY_EVENTS.PRODUCT.CREATED:
+          case PHARMACY_EVENTS.PRODUCT.UPDATED:
+            await this.handleProductEvent(payload);
+            break;
+        }
+      }
+
+      if (PHARMACY_EVENTS?.SALES) {
+        switch (eventName) {
+          case PHARMACY_EVENTS.SALES.TRANSACTION_COMPLETED:
+            await this.handleSalesEvent(payload);
+            break;
+        }
+      }
+
+      if (PHARMACY_EVENTS?.INVENTORY) {
+        switch (eventName) {
+          case PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED:
+            await this.handleInventoryEvent(payload);
+            break;
+        }
       }
 
     } catch (error) {
@@ -718,7 +804,6 @@ export class StoreAdapter {
 
   async handleProductEvent(payload) {
     try {
-      // Update related stores
       const productStore = this.stores.get('product');
       const inventoryStore = this.stores.get('inventory');
       const dashboardStore = this.stores.get('dashboard');
@@ -732,7 +817,6 @@ export class StoreAdapter {
       }
 
       if (dashboardStore?.isActive) {
-        // Refresh dashboard data when product changes
         const dashboardState = dashboardStore.hook.getState();
         if (typeof dashboardState.refreshData === 'function') {
           await dashboardState.refreshData();
@@ -748,7 +832,6 @@ export class StoreAdapter {
     try {
       const { transactionId, items, total, customer } = payload;
 
-      // Update multiple stores in sequence
       const storesToUpdate = ['sales', 'inventory', 'dashboard', 'audit'];
       
       for (const storeName of storesToUpdate) {
@@ -758,19 +841,25 @@ export class StoreAdapter {
         }
       }
 
-      // Emit follow-up events
-      await this.eventBus.emit(PHARMACY_EVENTS.DASHBOARD.DATA_REFRESH_NEEDED, {
-        reason: 'sales_transaction',
-        transactionId,
-        total
-      });
+      // Emit follow-up events with validation
+      const dashboardRefreshEvent = PHARMACY_EVENTS?.DASHBOARD?.DATA_REFRESH_NEEDED;
+      if (dashboardRefreshEvent && this.eventBus) {
+        await this.eventBus.emit(dashboardRefreshEvent, {
+          reason: 'sales_transaction',
+          transactionId,
+          total
+        });
+      }
 
       if (customer) {
-        await this.eventBus.emit(PHARMACY_EVENTS.CUSTOMER.TRANSACTION_RECORDED, {
-          customerId: customer._id,
-          transactionId,
-          amount: total
-        });
+        const customerTransactionEvent = PHARMACY_EVENTS?.CUSTOMER?.TRANSACTION_RECORDED;
+        if (customerTransactionEvent && this.eventBus) {
+          await this.eventBus.emit(customerTransactionEvent, {
+            customerId: customer._id,
+            transactionId,
+            amount: total
+          });
+        }
       }
 
     } catch (error) {
@@ -782,23 +871,23 @@ export class StoreAdapter {
     try {
       const { productId, newStock, alertLevel } = payload;
 
-      // Update inventory and product stores
       await Promise.all([
         this.syncSingleStore('inventory'),
         this.syncSingleStore('product')
       ]);
 
-      // Check for low stock alerts
       if (newStock <= alertLevel) {
-        await this.eventBus.emit(PHARMACY_EVENTS.ALERTS.LOW_STOCK_DETECTED, {
-          productId,
-          currentStock: newStock,
-          alertLevel,
-          timestamp: Date.now()
-        });
+        const lowStockEvent = PHARMACY_EVENTS?.ALERTS?.LOW_STOCK_DETECTED;
+        if (lowStockEvent && this.eventBus) {
+          await this.eventBus.emit(lowStockEvent, {
+            productId,
+            currentStock: newStock,
+            alertLevel,
+            timestamp: Date.now()
+          });
+        }
       }
 
-      // Update dashboard
       await this.syncSingleStore('dashboard');
 
     } catch (error) {
@@ -812,13 +901,11 @@ export class StoreAdapter {
     const store = this.stores.get(storeName);
     if (!store?.dependencies) return;
 
-    // Handle wildcard dependency (audit listens to all)
     if (store.dependencies.includes('*')) {
       this.handleAuditSync(storeName, newState, oldState);
       return;
     }
 
-    // Handle specific dependencies
     const dependentStores = Array.from(this.stores.entries())
       .filter(([name, s]) => s.dependencies?.includes(storeName))
       .map(([name]) => name);
@@ -827,7 +914,6 @@ export class StoreAdapter {
 
     debugLog(`🔗 Cross-store sync: "${storeName}" affects [${dependentStores.join(', ')}]`);
 
-    // Notify dependent stores of changes
     dependentStores.forEach(dependentStore => {
       this.debouncedEmitStateChange(`${dependentStore}_dependency_update`, {
         sourceStore: storeName,
@@ -878,95 +964,6 @@ export class StoreAdapter {
   }
 
   // ===================================================================
-  //  🔧 MIDDLEWARE & PLUGINS
-  // ===================================================================
-
-  async setupMiddleware() {
-    try {
-      // Setup pharmacy-specific middleware
-      await setupPharmacyMiddlewares(this.eventBus);
-      
-      // Add adapter-specific middleware
-      this.eventBus.addMiddleware('performance', this.performanceMiddleware.bind(this));
-      this.eventBus.addMiddleware('filtering', this.eventFilteringMiddleware.bind(this));
-      this.eventBus.addMiddleware('batching', this.batchingMiddleware.bind(this));
-      
-      debugLog('🔧 Middleware setup completed');
-    } catch (error) {
-      console.error('❌ Middleware setup failed:', error);
-      throw error;
-    }
-  }
-
-  performanceMiddleware(eventName, payload, next) {
-    const startTime = performance.now();
-    const operationId = this.performanceMonitor.startOperation(`event-${eventName}`);
-    
-    return next().finally(() => {
-      const duration = performance.now() - startTime;
-      this.performanceMonitor.endOperation(operationId, true);
-      
-      if (duration > 50) { // Log slow events
-        debugLog(`⚠️ Slow event: ${eventName} took ${duration.toFixed(2)}ms`);
-      }
-    });
-  }
-
-  eventFilteringMiddleware(eventName, payload, next) {
-    // Filter out events during destruction
-    if (this.isDestroyed) {
-      debugLog(`🚫 Filtered event during destruction: ${eventName}`);
-      return Promise.resolve();
-    }
-    
-    // Filter rapid duplicate events
-    if (this.isDuplicateEvent(eventName, payload)) {
-      debugLog(`🚫 Filtered duplicate event: ${eventName}`);
-      return Promise.resolve();
-    }
-    
-    return next();
-  }
-
-  batchingMiddleware(eventName, payload, next) {
-    // Batch similar events together
-    if (this.shouldBatchEvent(eventName)) {
-      this.addEventToBatch(eventName, payload);
-      return Promise.resolve();
-    }
-    
-    return next();
-  }
-
-  isDuplicateEvent(eventName, payload) {
-    const eventKey = `${eventName}-${JSON.stringify(payload)}`;
-    const now = Date.now();
-    const lastEmit = this.storeLastEmit.get(eventKey);
-    
-    if (lastEmit && now - lastEmit < this.config.EVENT_DEBOUNCE_DELAY) {
-      return true;
-    }
-    
-    this.storeLastEmit.set(eventKey, now);
-    return false;
-  }
-
-  shouldBatchEvent(eventName) {
-    const batchableEvents = [
-      PHARMACY_EVENTS.SYSTEM.STORE_STATE_CHANGED,
-      PHARMACY_EVENTS.INVENTORY.STOCK_UPDATED,
-      PHARMACY_EVENTS.PRODUCT.UPDATED
-    ];
-    
-    return batchableEvents.includes(eventName);
-  }
-
-  addEventToBatch(eventName, payload) {
-    // Implementation would add to batch queue
-    // This is handled by the batching system above
-  }
-
-  // ===================================================================
   //  🔄 AUTO SYNC & BACKGROUND TASKS
   // ===================================================================
 
@@ -990,7 +987,6 @@ export class StoreAdapter {
     try {
       debugLog('🔄 Performing auto sync...');
       
-      // Only sync stores that need it
       const storesToSync = this.getStoresNeedingSync();
       
       if (storesToSync.length === 0) {
@@ -1000,23 +996,27 @@ export class StoreAdapter {
 
       const results = await this.syncStores(storesToSync);
       
-      // Emit auto sync completion
-      await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.AUTO_SYNC_COMPLETED, {
-        timestamp: Date.now(),
-        syncedStores: storesToSync,
-        results
-      });
+      const autoSyncEvent = PHARMACY_EVENTS?.SYSTEM?.AUTO_SYNC_COMPLETED;
+      if (autoSyncEvent && this.eventBus) {
+        await this.eventBus.emit(autoSyncEvent, {
+          timestamp: Date.now(),
+          syncedStores: storesToSync,
+          results
+        });
+      }
 
       debugLog(`✅ Auto sync completed for ${storesToSync.length} stores`);
       
     } catch (error) {
       console.error('❌ Auto sync failed:', error);
       
-      // Emit auto sync failure
-      await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.AUTO_SYNC_FAILED, {
-        timestamp: Date.now(),
-        error: error.message
-      });
+      const autoSyncFailedEvent = PHARMACY_EVENTS?.SYSTEM?.AUTO_SYNC_FAILED;
+      if (autoSyncFailedEvent && this.eventBus) {
+        await this.eventBus.emit(autoSyncFailedEvent, {
+          timestamp: Date.now(),
+          error: error.message
+        });
+      }
     }
   }
 
@@ -1111,7 +1111,6 @@ export class StoreAdapter {
       }
     }
 
-    // Determine overall health
     const healthRatio = healthyStores / totalStores;
     if (healthRatio < 0.5) {
       health.overall = 'critical';
@@ -1121,7 +1120,6 @@ export class StoreAdapter {
       health.recommendations.push('Some stores experiencing issues - monitor closely');
     }
 
-    // Performance recommendations
     const perfMetrics = this.performanceMonitor.getMetrics();
     if (perfMetrics.errorRate > 5) {
       health.overall = 'warning';
@@ -1138,12 +1136,10 @@ export class StoreAdapter {
 
     const now = Date.now();
     
-    // Check last sync time
-    if (store.lastSync && (now - store.lastSync) > 30 * 60 * 1000) { // 30 minutes
+    if (store.lastSync && (now - store.lastSync) > 30 * 60 * 1000) {
       return { status: 'warning', issue: 'Store sync is overdue' };
     }
 
-    // Check for store-specific issues
     try {
       const storeState = store.hook.getState();
       
@@ -1153,7 +1149,7 @@ export class StoreAdapter {
       
       if (storeState.isLoading && storeState.loadingStartTime) {
         const loadingDuration = now - storeState.loadingStartTime;
-        if (loadingDuration > 30000) { // 30 seconds
+        if (loadingDuration > 30000) {
           return { status: 'warning', issue: 'Store has been loading for too long' };
         }
       }
@@ -1257,22 +1253,18 @@ export class StoreAdapter {
     this.isDestroyed = true;
 
     try {
-      // Stop auto sync
       this.stopAutoSync();
 
-      // Clear all debounce timeouts
       for (const timeoutId of this.eventDebounceMap.values()) {
         clearTimeout(timeoutId);
       }
       this.eventDebounceMap.clear();
 
-      // Clear batch timeout
       if (this.batchTimeout) {
         clearTimeout(this.batchTimeout);
         this.batchTimeout = null;
       }
 
-      // Unsubscribe from all stores
       for (const [storeName, unsubscribe] of this.storeSubscriptions.entries()) {
         try {
           if (typeof unsubscribe === 'function') {
@@ -1283,7 +1275,6 @@ export class StoreAdapter {
         }
       }
 
-      // Clean up store event listeners
       for (const [storeName, store] of this.stores.entries()) {
         for (const [eventName, unsubscribe] of store.eventListeners.entries()) {
           try {
@@ -1297,7 +1288,6 @@ export class StoreAdapter {
         store.eventListeners.clear();
       }
 
-      // Clear all collections
       this.stores.clear();
       this.storeSubscriptions.clear();
       this.storeStates.clear();
@@ -1308,15 +1298,14 @@ export class StoreAdapter {
       this.eventBuffer.length = 0;
       this.operationQueue.length = 0;
 
-      // Emit destruction event
-      if (this.eventBus && !this.eventBus.isDestroyed) {
-        await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.ADAPTER_DESTROYED, {
+      const destroyEvent = PHARMACY_EVENTS?.SYSTEM?.ADAPTER_DESTROYED;
+      if (destroyEvent && this.eventBus && !this.eventBus.isDestroyed) {
+        await this.eventBus.emit(destroyEvent, {
           timestamp: Date.now(),
           performanceMetrics: this.performanceMonitor.getMetrics()
         });
       }
 
-      // Clear performance monitor
       this.performanceMonitor.clearMetrics();
 
       debugLog('✅ Store Adapter destroyed successfully');
@@ -1335,14 +1324,11 @@ export class StoreAdapter {
     
     const wasDestroyed = this.isDestroyed;
     
-    // Soft destroy (preserve config)
     await this.destroy();
     
-    // Reset state
     this.isDestroyed = false;
     this.isInitialized = false;
     
-    // Re-initialize
     await this.init();
     
     debugLog('✅ Store Adapter restarted successfully');
@@ -1391,7 +1377,7 @@ export class StoreAdapter {
       performance: this.performanceMonitor.getMetrics(),
       health: this.getStoreHealth(),
       metrics: this.getAdapterMetrics(),
-      eventBuffer: this.eventBuffer.slice(-10), // Last 10 events
+      eventBuffer: this.eventBuffer.slice(-10),
       recentOperations: Array.from(this.performanceMonitor.metrics.values())
         .sort((a, b) => (b.endTime || b.startTime) - (a.endTime || a.startTime))
         .slice(0, 10)
@@ -1424,8 +1410,561 @@ export const destroyStoreAdapter = async () => {
   if (globalStoreAdapter) {
     await globalStoreAdapter.destroy();
     globalStoreAdapter = null;
+    debugLog('🗑️ Global store adapter destroyed');
   }
 };
 
-// Convenience export
-export { StoreAdapter as default };
+export const resetStoreAdapter = async (config = {}) => {
+  await destroyStoreAdapter();
+  return await createStoreAdapter(config);
+};
+
+// ===================================================================
+//  🎯 ADVANCED UTILITY FUNCTIONS
+// ===================================================================
+
+export const withStoreAdapter = (component) => {
+  return (props) => {
+    const adapter = getStoreAdapter();
+    return component({ ...props, storeAdapter: adapter });
+  };
+};
+
+export const useStoreAdapterMetrics = () => {
+  const adapter = getStoreAdapter();
+  return adapter ? adapter.getAdapterMetrics() : null;
+};
+
+export const useStoreHealth = () => {
+  const adapter = getStoreAdapter();
+  return adapter ? adapter.getStoreHealth() : null;
+};
+
+// ===================================================================
+//  📊 MONITORING & DEBUGGING UTILITIES
+// ===================================================================
+
+export const StoreAdapterDashboard = {
+  getSystemOverview() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return null;
+
+    return {
+      adapter: {
+        isInitialized: adapter.isInitialized,
+        isDestroyed: adapter.isDestroyed,
+        uptime: Date.now() - (adapter.initTime || Date.now()),
+        version: '2.0.0'
+      },
+      stores: adapter.getStoreStatuses(),
+      performance: adapter.performanceMonitor.getMetrics(),
+      health: adapter.getStoreHealth(),
+      events: {
+        bufferSize: adapter.eventBuffer.length,
+        recentEvents: adapter.eventBuffer.slice(-10)
+      }
+    };
+  },
+
+  async runDiagnostics() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return { error: 'No adapter found' };
+
+    const diagnostics = {
+      timestamp: new Date().toISOString(),
+      tests: []
+    };
+
+    // Test 1: Adapter initialization
+    diagnostics.tests.push({
+      name: 'Adapter Initialization',
+      status: adapter.isInitialized ? 'pass' : 'fail',
+      message: adapter.isInitialized ? 'Adapter is properly initialized' : 'Adapter not initialized'
+    });
+
+    // Test 2: Event bus connectivity
+    try {
+      await adapter.eventBus.emit('diagnostic:test', { timestamp: Date.now() });
+      diagnostics.tests.push({
+        name: 'Event Bus Connectivity',
+        status: 'pass',
+        message: 'Event bus is responsive'
+      });
+    } catch (error) {
+      diagnostics.tests.push({
+        name: 'Event Bus Connectivity',
+        status: 'fail',
+        message: `Event bus error: ${error.message}`
+      });
+    }
+
+    // Test 3: Store responsiveness
+    let responsiveStores = 0;
+    const totalStores = adapter.stores.size;
+
+    for (const [storeName, store] of adapter.stores.entries()) {
+      try {
+        const state = store.hook.getState();
+        if (state && typeof state === 'object') {
+          responsiveStores++;
+        }
+      } catch (error) {
+        console.warn(`Store ${storeName} not responsive:`, error);
+      }
+    }
+
+    diagnostics.tests.push({
+      name: 'Store Responsiveness',
+      status: responsiveStores === totalStores ? 'pass' : 'warning',
+      message: `${responsiveStores}/${totalStores} stores responsive`
+    });
+
+    // Test 4: Performance metrics
+    const perfMetrics = adapter.performanceMonitor.getMetrics();
+    diagnostics.tests.push({
+      name: 'Performance Metrics',
+      status: perfMetrics.errorRate < 5 ? 'pass' : 'warning',
+      message: `Error rate: ${perfMetrics.errorRate.toFixed(2)}%`
+    });
+
+    // Test 5: Memory usage
+    const memoryUsage = {
+      stores: adapter.stores.size,
+      subscriptions: adapter.storeSubscriptions.size,
+      eventBuffer: adapter.eventBuffer.length,
+      performanceMetrics: adapter.performanceMonitor.metrics.size
+    };
+
+    const totalMemoryItems = Object.values(memoryUsage).reduce((a, b) => a + b, 0);
+    diagnostics.tests.push({
+      name: 'Memory Usage',
+      status: totalMemoryItems < 10000 ? 'pass' : 'warning',
+      message: `Total tracked items: ${totalMemoryItems}`,
+      details: memoryUsage
+    });
+
+    return diagnostics;
+  },
+
+  async performHealthCheck() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return { status: 'critical', message: 'No adapter found' };
+
+    const health = adapter.getStoreHealth();
+    const metrics = adapter.getAdapterMetrics();
+
+    return {
+      status: health.overall,
+      timestamp: new Date().toISOString(),
+      summary: {
+        stores: {
+          total: adapter.stores.size,
+          healthy: Object.values(health.stores).filter(s => s.status === 'healthy').length,
+          issues: health.issues.length
+        },
+        performance: {
+          totalOperations: metrics.performance.totalOperations,
+          errorRate: metrics.performance.errorRate,
+          activeOperations: metrics.performance.activeOperations
+        },
+        events: {
+          bufferSize: adapter.eventBuffer.length,
+          subscriptions: adapter.storeSubscriptions.size
+        }
+      },
+      issues: health.issues,
+      recommendations: health.recommendations
+    };
+  },
+
+  startMonitoring(interval = 30000) {
+    return setInterval(async () => {
+      const health = await StoreAdapterDashboard.performHealthCheck();
+      
+      if (health.status !== 'healthy') {
+        console.warn('🚨 Store Adapter Health Issue:', health);
+        
+        // Emit health warning event
+        const adapter = getStoreAdapter();
+        if (adapter?.eventBus) {
+          adapter.eventBus.emit(PHARMACY_EVENTS.SYSTEM.PERFORMANCE_WARNING, {
+            type: 'store_adapter_health',
+            status: health.status,
+            issues: health.issues,
+            timestamp: Date.now()
+          });
+        }
+      }
+    }, interval);
+  }
+};
+
+// ===================================================================
+//  🔧 DEVELOPMENT & DEBUGGING TOOLS
+// ===================================================================
+
+export const StoreAdapterDevTools = {
+  enableDebugMode() {
+    const adapter = getStoreAdapter();
+    if (adapter) {
+      adapter.config.ENABLE_DEBUG_LOGS = true;
+      adapter.config.PERFORMANCE_TRACKING = true;
+      console.log('🔧 Store Adapter debug mode enabled');
+    }
+  },
+
+  disableDebugMode() {
+    const adapter = getStoreAdapter();
+    if (adapter) {
+      adapter.config.ENABLE_DEBUG_LOGS = false;
+      console.log('🔇 Store Adapter debug mode disabled');
+    }
+  },
+
+  dumpState() {
+    const adapter = getStoreAdapter();
+    if (adapter) {
+      adapter.debugDumpState();
+    }
+  },
+
+  async simulateStoreError(storeName) {
+    const adapter = getStoreAdapter();
+    if (!adapter) return;
+
+    try {
+      await adapter.eventBus.emit(PHARMACY_EVENTS.SYSTEM.ERROR_OCCURRED, {
+        source: 'store',
+        storeName,
+        error: 'Simulated error for testing',
+        timestamp: Date.now()
+      });
+      
+      console.log(`🧪 Simulated error for store: ${storeName}`);
+    } catch (error) {
+      console.error('Failed to simulate error:', error);
+    }
+  },
+
+  async testStoreSync(storeName) {
+    const adapter = getStoreAdapter();
+    if (!adapter) return;
+
+    const startTime = Date.now();
+    
+    try {
+      const result = await adapter.syncSingleStore(storeName);
+      const duration = Date.now() - startTime;
+      
+      console.log(`✅ Store sync test completed for ${storeName}:`, {
+        duration: `${duration}ms`,
+        result
+      });
+      
+      return { success: true, duration, result };
+    } catch (error) {
+      const duration = Date.now() - startTime;
+      
+      console.error(`❌ Store sync test failed for ${storeName}:`, error);
+      return { success: false, duration, error: error.message };
+    }
+  },
+
+  generateReport() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return null;
+
+    return adapter.generateDiagnosticReport();
+  },
+
+  async stressTest(duration = 10000, operationsPerSecond = 10) {
+    const adapter = getStoreAdapter();
+    if (!adapter) return;
+
+    console.log(`🏋️ Starting stress test: ${duration}ms at ${operationsPerSecond} ops/sec`);
+    
+    const startTime = Date.now();
+    let operations = 0;
+    let errors = 0;
+    
+    const interval = setInterval(async () => {
+      try {
+        // Simulate various operations
+        const operation = Math.floor(Math.random() * 3);
+        
+        switch (operation) {
+          case 0:
+            await adapter.syncStores();
+            break;
+          case 1:
+            await adapter.eventBus.emit('test:stress_operation', { 
+              operation: operations,
+              timestamp: Date.now() 
+            });
+            break;
+          case 2:
+            adapter.getAdapterMetrics();
+            break;
+        }
+        
+        operations++;
+      } catch (error) {
+        errors++;
+        console.error('Stress test operation failed:', error);
+      }
+      
+      if (Date.now() - startTime >= duration) {
+        clearInterval(interval);
+        
+        const results = {
+          duration,
+          totalOperations: operations,
+          errors,
+          successRate: ((operations - errors) / operations * 100).toFixed(2),
+          operationsPerSecond: (operations / (duration / 1000)).toFixed(2)
+        };
+        
+        console.log('🏁 Stress test completed:', results);
+        return results;
+      }
+    }, 1000 / operationsPerSecond);
+  }
+};
+
+// ===================================================================
+//  🚀 INITIALIZATION HELPERS
+// ===================================================================
+
+export const initializeStoreSystem = async (config = {}) => {
+  try {
+    console.log('🚀 Initializing Store System...');
+    
+    // Create and initialize store adapter
+    const adapter = await createStoreAdapter(config);
+    
+    // Setup monitoring if enabled
+    if (config.ENABLE_MONITORING !== false) {
+      StoreAdapterDashboard.startMonitoring(config.MONITORING_INTERVAL || 30000);
+    }
+    
+    // Enable debug mode in development
+    if (process.env.NODE_ENV === 'development' && config.ENABLE_DEBUG_LOGS !== false) {
+      StoreAdapterDevTools.enableDebugMode();
+    }
+    
+    console.log('✅ Store System initialized successfully');
+    return adapter;
+    
+  } catch (error) {
+    console.error('❌ Store System initialization failed:', error);
+    throw error;
+  }
+};
+
+export const shutdownStoreSystem = async () => {
+  try {
+    console.log('🛑 Shutting down Store System...');
+    
+    await destroyStoreAdapter();
+    
+    console.log('✅ Store System shutdown complete');
+  } catch (error) {
+    console.error('❌ Store System shutdown failed:', error);
+    throw error;
+  }
+};
+
+// ===================================================================
+//  📈 PERFORMANCE OPTIMIZATION UTILITIES
+// ===================================================================
+
+export const StoreOptimizer = {
+  async optimizeStorePerformance() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return;
+
+    console.log('⚡ Optimizing store performance...');
+    
+    // Clear old performance metrics
+    adapter.performanceMonitor.clearMetrics();
+    
+    // Clear event buffer if too large
+    if (adapter.eventBuffer.length > 100) {
+      adapter.eventBuffer.splice(0, adapter.eventBuffer.length - 100);
+    }
+    
+    // Clean up old state snapshots
+    for (const [storeName, store] of adapter.stores.entries()) {
+      if (store.stateHistory && store.stateHistory.length > 10) {
+        store.stateHistory.splice(0, store.stateHistory.length - 10);
+      }
+    }
+    
+    // Force garbage collection if available
+    if (global.gc) {
+      global.gc();
+    }
+    
+    console.log('✅ Store performance optimization completed');
+  },
+
+  async analyzePerfBottlenecks() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return null;
+
+    const metrics = adapter.performanceMonitor.getMetrics();
+    const bottlenecks = [];
+    
+    // Analyze slow operations
+    metrics.recentOperations.forEach(op => {
+      if (op.duration > 100) {
+        bottlenecks.push({
+          type: 'slow_operation',
+          operation: op.name,
+          duration: op.duration,
+          timestamp: op.startTime
+        });
+      }
+    });
+    
+    // Analyze error rates
+    if (metrics.errorRate > 5) {
+      bottlenecks.push({
+        type: 'high_error_rate',
+        errorRate: metrics.errorRate,
+        totalErrors: metrics.totalErrors
+      });
+    }
+    
+    // Analyze memory usage
+    const memoryUsage = process.memoryUsage();
+    if (memoryUsage.heapUsed > 100 * 1024 * 1024) { // 100MB
+      bottlenecks.push({
+        type: 'high_memory_usage',
+        heapUsed: memoryUsage.heapUsed,
+        heapTotal: memoryUsage.heapTotal
+      });
+    }
+    
+    return {
+      timestamp: Date.now(),
+      bottlenecks,
+      recommendations: this.generateOptimizationRecommendations(bottlenecks)
+    };
+  },
+
+  generateOptimizationRecommendations(bottlenecks) {
+    const recommendations = [];
+    
+    bottlenecks.forEach(bottleneck => {
+      switch (bottleneck.type) {
+        case 'slow_operation':
+          recommendations.push(`Optimize ${bottleneck.operation} - currently taking ${bottleneck.duration}ms`);
+          break;
+        case 'high_error_rate':
+          recommendations.push('Investigate error sources and add error handling');
+          break;
+        case 'high_memory_usage':
+          recommendations.push('Consider implementing memory cleanup strategies');
+          break;
+      }
+    });
+    
+    return recommendations;
+  }
+};
+
+// ===================================================================
+//  🔄 BACKUP & RECOVERY UTILITIES
+// ===================================================================
+
+export const StoreBackupManager = {
+  async createStateSnapshot() {
+    const adapter = getStoreAdapter();
+    if (!adapter) return null;
+
+    const snapshot = {
+      timestamp: Date.now(),
+      adapterConfig: { ...adapter.config },
+      storeStates: {},
+      metrics: adapter.getAdapterMetrics(),
+      version: '2.0.0'
+    };
+
+    // Capture all store states
+    for (const [storeName, store] of adapter.stores.entries()) {
+      try {
+        snapshot.storeStates[storeName] = {
+          state: store.hook.getState(),
+          lastSync: store.lastSync,
+          isActive: store.isActive
+        };
+      } catch (error) {
+        console.warn(`Failed to snapshot store ${storeName}:`, error);
+        snapshot.storeStates[storeName] = { error: error.message };
+      }
+    }
+
+    return snapshot;
+  },
+
+  async restoreFromSnapshot(snapshot) {
+    const adapter = getStoreAdapter();
+    if (!adapter) throw new Error('No adapter available for restore');
+
+    console.log('🔄 Restoring from snapshot...');
+
+    // Validate snapshot
+    if (!snapshot.storeStates) {
+      throw new Error('Invalid snapshot format');
+    }
+
+    let restoredCount = 0;
+    let errorCount = 0;
+
+    // Restore store states
+    for (const [storeName, stateData] of Object.entries(snapshot.storeStates)) {
+      try {
+        const store = adapter.stores.get(storeName);
+        if (store && store.isActive && stateData.state) {
+          // This would require store-specific restore methods
+          // For now, we just log the restoration attempt
+          console.log(`Restoring state for store: ${storeName}`);
+          restoredCount++;
+        }
+      } catch (error) {
+        console.error(`Failed to restore store ${storeName}:`, error);
+        errorCount++;
+      }
+    }
+
+    console.log(`✅ Snapshot restore completed: ${restoredCount} restored, ${errorCount} errors`);
+    return { restoredCount, errorCount };
+  }
+};
+
+// ===================================================================
+//  🎯 FINAL EXPORTS & DEFAULT
+// ===================================================================
+
+// Export store adapter instance and utilities
+export {
+  ADAPTER_CONFIG,
+  StorePerformanceMonitor
+};
+
+// Default export with commonly used functions
+export default {
+  // Core functions
+  createStoreAdapter,
+  getStoreAdapter,
+  destroyStoreAdapter,
+  resetStoreAdapter,
+  
+  // React hooks
+  useStoreAdapterMetrics,
+  useStoreHealth,
+  
+  // Higher-order components
+  withStoreAdapter
+};

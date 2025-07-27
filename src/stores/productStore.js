@@ -291,9 +291,11 @@ const syncToMeiliProducts = async (documents, batchSize = PERFORMANCE_CONFIG.BAT
       batches.push(documents.slice(i, i + batchSize));
     }
 
-    const results = await Promise.allSettled(
-      batches.map(batch => 
-        window.electronAPI.sync({
+    // Process batches sequentially to avoid overwhelming Meilisearch
+    const results = [];
+    for (const batch of batches) {
+      try {
+        const result = await window.electronAPI.sync({
           indexName: 'products',
           documents: batch.map(product => ({
             _id: product._id,
@@ -307,9 +309,17 @@ const syncToMeiliProducts = async (documents, batchSize = PERFORMANCE_CONFIG.BAT
             totalQuantity: product.totalQuantity || 0,
             barcode: product.barcode || ''
           }))
-        })
-      )
-    );
+        });
+        
+        results.push({ status: 'fulfilled', value: result });
+        
+        // Small delay between batches to prevent overwhelming
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } catch (error) {
+        console.warn('Batch sync failed:', error);
+        results.push({ status: 'rejected', reason: error });
+      }
+    }
 
     const failed = results.filter(r => r.status === 'rejected');
     if (failed.length > 0) {
@@ -324,6 +334,84 @@ const syncToMeiliProducts = async (documents, batchSize = PERFORMANCE_CONFIG.BAT
   } catch (error) {
     console.error('Batch sync failed:', error);
     return { success: false, error: error.message };
+  }
+};
+
+
+// Optional: Add a separate initialization function in productStore.js
+// This should be called once when the app starts, not on every sync
+const initializeMeilisearchIndex = async () => {
+  try {
+    if (!window.electronAPI?.initIndex) {
+      console.warn('Meilisearch initialization not available');
+      return { success: false };
+    }
+
+    const result = await window.electronAPI.initIndex({
+      indexName: 'products',
+      primaryKey: '_id'
+    });
+
+    return result;
+  } catch (error) {
+    console.error('Index initialization failed:', error);
+    return { success: false, error: error.message };
+  }
+};
+
+// Updated syncAllProductsToMeili function
+const syncAllProductsToMeili = async () => {
+  perfMonitor.start('syncAllProductsToMeili');
+  
+  try {
+    const { allProducts } = get();
+    
+    // If no products in memory, fetch from database first
+    if (allProducts.length === 0) {
+      await get().syncCacheWithDatabase();
+    }
+    
+    const productsToSync = get().allProducts;
+    
+    if (productsToSync.length === 0) {
+      throw new Error('No products found to sync');
+    }
+
+    console.log(`Starting sync of ${productsToSync.length} products to Meilisearch...`);
+    
+    // Initialize index if needed (only once)
+    await initializeMeilisearchIndex();
+    
+    // Sync all products in smaller batches to avoid overwhelming Meilisearch
+    const result = await syncToMeiliProducts(productsToSync, 50); // Reduced batch size
+    
+    if (!result.success) {
+      throw new Error(result.error || 'Sync failed');
+    }
+    
+    console.log(`Successfully synced ${result.synced}/${result.total} batches to Meilisearch`);
+    
+    // Update last sync time
+    set({ lastSyncTime: new Date() });
+    
+    perfMonitor.end('syncAllProductsToMeili');
+    
+    return {
+      success: true,
+      message: `Successfully synced ${productsToSync.length} products to search engine`,
+      syncedProducts: productsToSync.length,
+      syncedBatches: result.synced,
+      totalBatches: result.total
+    };
+    
+  } catch (error) {
+    console.error('Error syncing all products to Meili:', error);
+    perfMonitor.end('syncAllProductsToMeili');
+    
+    return {
+      success: false,
+      error: error.message || 'Unknown error occurred during sync'
+    };
   }
 };
 
