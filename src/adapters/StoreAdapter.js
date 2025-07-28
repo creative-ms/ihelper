@@ -3,6 +3,7 @@
 //  🏗️ FIXED STORE ADAPTER - MIDDLEWARE METHOD CORRECTED
 //  Fixed: EventBus method mismatch, event validation, performance, DUPLICATE EXPORTS
 // ===================================================================
+import { addDebouncingToStoreAdapter } from '../utils/eventBus/middleware/simpleDebouncing.js';
 
 import { 
   createPharmacyEventBus, 
@@ -112,6 +113,21 @@ const warnLog = console.warn;
 // ===================================================================
 
 export class StoreAdapter {
+     
+   getEnhancedMetrics() {
+  const baseMetrics = this.getAdapterMetrics();
+  const debouncingMetrics = this.getDebouncingMetrics ? this.getDebouncingMetrics() : null;
+  
+  return {
+    ...baseMetrics,
+    debouncing: debouncingMetrics,
+    performance: {
+      eventsReduced: debouncingMetrics ? 
+        (debouncingMetrics.eventsDebounced + debouncingMetrics.eventsSuppressed) : 0,
+      reductionPercentage: debouncingMetrics?.reductionPercentage || '0%'
+    }
+  };
+}
   constructor(config = {}) {
     this.config = { ...ADAPTER_CONFIG, ...config };
     this.eventBus = null;
@@ -151,54 +167,59 @@ export class StoreAdapter {
   // ===================================================================
 
   async init() {
-    if (this.isInitialized) {
-      warnLog('Store Adapter already initialized');
-      return this;
-    }
-
-    const operationId = this.performanceMonitor.startOperation('adapter-init');
-    
-    try {
-      debugLog('🚀 Initializing Store Adapter...');
-      
-      // Initialize event bus
-      await this.initializeEventBus();
-      
-      // Register all stores
-      await this.registerAllStores();
-      
-      // Setup store synchronization
-      await this.setupStoreSynchronization();
-      
-      // 🔧 FIXED: Setup middleware with correct method
-      await this.setupMiddleware();
-      
-      // Start auto-sync if enabled
-      if (this.config.AUTO_SYNC_INTERVAL > 0) {
-        this.startAutoSync();
-      }
-      
-      this.isInitialized = true;
-      debugLog('✅ Store Adapter initialized successfully');
-      
-      // 🔧 FIXED: Validate event name before emitting
-      if (PHARMACY_EVENTS?.SYSTEM?.ADAPTER_INITIALIZED) {
-        await this.eventBus.emit(PHARMACY_EVENTS.SYSTEM.ADAPTER_INITIALIZED, {
-          timestamp: Date.now(),
-          storeCount: this.stores.size,
-          config: this.config
-        });
-      }
-      
-      this.performanceMonitor.endOperation(operationId, true);
-      return this;
-      
-    } catch (error) {
-      console.error('❌ Store Adapter initialization failed:', error);
-      this.performanceMonitor.endOperation(operationId, false, error);
-      throw error;
-    }
+  if (this.isInitialized) {
+    console.warn('Store Adapter already initialized');
+    return this;
   }
+
+  const operationId = this.performanceMonitor.startOperation('adapter-init');
+  
+  try {
+    console.log('🚀 Initializing Store Adapter...');
+    
+    // Initialize event bus
+    await this.initializeEventBus();
+    
+    // Register all stores
+    await this.registerAllStores();
+    
+    // Setup store synchronization
+    await this.setupStoreSynchronization();
+    
+    // Setup middleware
+    await this.setupMiddleware();
+    
+    // 🎯 SIMPLE DEBOUNCING - WORKS WITH YOUR EVENTBUS
+  addDebouncingToStoreAdapter(this);
+  
+  // Start auto-sync if enabled
+  if (this.config.AUTO_SYNC_INTERVAL > 0) {
+    this.startAutoSync();
+  }
+    
+    // Debouncing methods are already added by addDebouncingToStoreAdapter()
+// No need to manually assign them - they're attached to 'this' automatically
+    
+    this.isInitialized = true;
+    console.log('✅ Store Adapter initialized with smart debouncing');
+    
+    // Emit initialization event (this will now be debounced!)
+    await this.eventBus.emit('system:adapter:initialized', {
+      timestamp: Date.now(),
+      storeCount: this.stores.size,
+      config: this.config,
+      debouncingEnabled: true
+    });
+    
+    this.performanceMonitor.endOperation(operationId, true);
+    return this;
+    
+  } catch (error) {
+    console.error('❌ Store Adapter initialization failed:', error);
+    this.performanceMonitor.endOperation(operationId, false, error);
+    throw error;
+  }
+}
 
   async initializeEventBus() {
     try {
@@ -1255,6 +1276,15 @@ export class StoreAdapter {
     try {
       this.stopAutoSync();
 
+      // Clear debouncing if available
+if (this.getDebouncingMetrics) {
+  try {
+    this.resetDebouncingMetrics();
+  } catch (error) {
+    console.warn('Error resetting debouncing metrics:', error);
+  }
+}
+
       for (const timeoutId of this.eventDebounceMap.values()) {
         clearTimeout(timeoutId);
       }
@@ -1312,6 +1342,7 @@ export class StoreAdapter {
       
     } catch (error) {
       console.error('❌ Error during Store Adapter destruction:', error);
+      this.isDestroyed = true;
     }
   }
 
