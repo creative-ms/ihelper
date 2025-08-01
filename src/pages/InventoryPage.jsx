@@ -45,30 +45,30 @@ const useDebounce = (value, delay) => {
   return debouncedValue;
 };
 
-// Memoized Cache Status Component
+// Memoized Cache Status Component - Updated for PouchDB-only
 const CacheStatusIndicator = React.memo(({ 
   cacheStats, 
   isLoading, 
   lastSyncTime, 
   onRefresh, 
   isRefreshing, 
-  isOnline 
+  connectionStatus 
 }) => {
   const [showDetails, setShowDetails] = useState(false);
   
   const getCacheStatusColor = useCallback(() => {
     if (isLoading) return 'text-blue-500';
-    if (cacheStats?.isStale) return 'text-orange-500';
-    if (cacheStats?.healthy) return 'text-green-500';
-    return 'text-gray-500';
-  }, [isLoading, cacheStats]);
+    if (!connectionStatus?.isInitialized) return 'text-red-500';
+    if (connectionStatus?.error) return 'text-orange-500';
+    return 'text-green-500';
+  }, [isLoading, connectionStatus]);
 
   const getCacheStatusText = useCallback(() => {
-    if (isLoading) return 'Syncing...';
-    if (cacheStats?.isStale) return 'Cache Stale';
-    if (cacheStats?.healthy) return 'Cache Fresh';
-    return 'No Cache';
-  }, [isLoading, cacheStats]);
+    if (isLoading) return 'Loading...';
+    if (!connectionStatus?.isInitialized) return 'Not Initialized';
+    if (connectionStatus?.error) return 'Error';
+    return 'PouchDB Ready';
+  }, [isLoading, connectionStatus]);
 
   const formatBytes = useCallback((bytes) => {
     if (bytes === 0) return '0 B';
@@ -101,10 +101,10 @@ const CacheStatusIndicator = React.memo(({
         <div className={`p-2 rounded-lg ${getCacheStatusColor()} bg-opacity-10`}>
           {isLoading ? (
             <Loader2 className="h-4 w-4 animate-spin" />
-          ) : cacheStats?.isStale ? (
+          ) : !connectionStatus?.isInitialized ? (
             <AlertCircle className="h-4 w-4" />
-          ) : cacheStats?.healthy ? (
-            <CheckCircle className="h-4 w-4" />
+          ) : connectionStatus?.error ? (
+            <AlertTriangle className="h-4 w-4" />
           ) : (
             <Database className="h-4 w-4" />
           )}
@@ -125,7 +125,7 @@ const CacheStatusIndicator = React.memo(({
           
           {lastSyncTime && (
             <p className="text-xs text-slate-500 dark:text-slate-400 truncate">
-              Last sync: {formatTime(lastSyncTime)}
+              Last update: {formatTime(lastSyncTime)}
             </p>
           )}
         </div>
@@ -134,7 +134,7 @@ const CacheStatusIndicator = React.memo(({
           onClick={handleRefreshClick}
           disabled={isRefreshing}
           className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700 transition-colors disabled:opacity-50"
-          title="Refresh Cache"
+          title="Refresh from PouchDB"
         >
           <RefreshCw className={`h-4 w-4 ${isRefreshing ? 'animate-spin' : ''}`} />
         </button>
@@ -145,7 +145,7 @@ const CacheStatusIndicator = React.memo(({
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <h3 className="text-sm font-semibold text-slate-800 dark:text-dark-text">
-                Cache Status
+                PouchDB Status
               </h3>
               <button
                 onClick={() => setShowDetails(false)}
@@ -158,61 +158,55 @@ const CacheStatusIndicator = React.memo(({
             <div className="space-y-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  {isOnline ? (
-                    <Wifi className="h-4 w-4 text-green-500" />
-                  ) : (
-                    <WifiOff className="h-4 w-4 text-red-500" />
-                  )}
-                  <span className="text-sm text-slate-600 dark:text-slate-300">Connection</span>
+                  <Database className="h-4 w-4 text-blue-500" />
+                  <span className="text-sm text-slate-600 dark:text-slate-300">Storage</span>
                 </div>
-                <span className={`text-sm font-medium ${
-                  isOnline ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400'
-                }`}>
-                  {isOnline ? 'Online' : 'Offline'}
+                <span className="text-sm font-medium text-blue-600 dark:text-blue-400">
+                  PouchDB
                 </span>
               </div>
 
               {cacheStats && (
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <HardDrive className="h-4 w-4 text-blue-500" />
-                    <span className="text-sm text-slate-600 dark:text-slate-300">Cache Size</span>
+                <>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <HardDrive className="h-4 w-4 text-blue-500" />
+                      <span className="text-sm text-slate-600 dark:text-slate-300">Cache Size</span>
+                    </div>
+                    <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                      {formatBytes(cacheStats.totalSize || 0)}
+                    </span>
                   </div>
-                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
-                    {formatBytes(cacheStats.totalSize || 0)}
-                  </span>
-                </div>
-              )}
 
-              {cacheStats && (
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <Box className="h-4 w-4 text-purple-500" />
-                    <span className="text-sm text-slate-600 dark:text-slate-300">Products</span>
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center space-x-2">
+                      <Box className="h-4 w-4 text-purple-500" />
+                      <span className="text-sm text-slate-600 dark:text-slate-300">Products</span>
+                    </div>
+                    <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
+                      {cacheStats.productsCount || 0}
+                    </span>
                   </div>
-                  <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
-                    {cacheStats.productsCount || 0}
-                  </span>
-                </div>
+                </>
               )}
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
-                  <Zap className="h-4 w-4 text-orange-500" />
-                  <span className="text-sm text-slate-600 dark:text-slate-300">Sync Status</span>
+                  <Zap className="h-4 w-4 text-green-500" />
+                  <span className="text-sm text-slate-600 dark:text-slate-300">Status</span>
                 </div>
                 <span className={`text-sm font-medium ${
                   isLoading ? 'text-blue-600' : 
-                  cacheStats?.isStale ? 'text-orange-600' : 'text-green-600'
+                  connectionStatus?.error ? 'text-red-600' : 'text-green-600'
                 }`}>
-                  {isLoading ? 'Syncing' : cacheStats?.isStale ? 'Stale' : 'Fresh'}
+                  {isLoading ? 'Loading' : connectionStatus?.error ? 'Error' : 'Ready'}
                 </span>
               </div>
 
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <Clock className="h-4 w-4 text-gray-500" />
-                  <span className="text-sm text-slate-600 dark:text-slate-300">Last Sync</span>
+                  <span className="text-sm text-slate-600 dark:text-slate-300">Last Update</span>
                 </div>
                 <span className="text-sm font-medium text-slate-800 dark:text-slate-200">
                   {formatTime(lastSyncTime)}
@@ -224,15 +218,17 @@ const CacheStatusIndicator = React.memo(({
               <div className="flex items-center space-x-2">
                 <div className="flex-1">
                   <div className="flex items-center justify-between mb-1">
-                    <span className="text-xs text-slate-500 dark:text-slate-400">Performance</span>
+                    <span className="text-xs text-slate-500 dark:text-slate-400">Health</span>
                     <span className="text-xs text-slate-500 dark:text-slate-400">
-                      {cacheStats?.isStale ? 'Needs Update' : 'Optimized'}
+                      {connectionStatus?.error ? 'Issues Detected' : 'Healthy'}
                     </span>
                   </div>
                   <div className="w-full bg-slate-200 dark:bg-slate-700 rounded-full h-2">
                     <div 
                       className={`h-2 rounded-full transition-all duration-300 ${
-                        cacheStats?.isStale ? 'bg-orange-500 w-3/4' : 'bg-green-500 w-full'
+                        connectionStatus?.error ? 'bg-red-500 w-1/2' : 
+                        !connectionStatus?.isInitialized ? 'bg-orange-500 w-3/4' : 
+                        'bg-green-500 w-full'
                       }`}
                     />
                   </div>
@@ -266,7 +262,7 @@ const SyncStatusBar = React.memo(({ isLoading, error, onDismissError }) => {
             <span className={`text-sm font-medium ${
               error ? 'text-red-700 dark:text-red-300' : 'text-blue-700 dark:text-blue-300'
             }`}>
-              {error || 'Syncing inventory data...'}
+              {error || 'Loading inventory from PouchDB...'}
             </span>
           </div>
           
@@ -286,19 +282,20 @@ const SyncStatusBar = React.memo(({ isLoading, error, onDismissError }) => {
 });
 
 const InventoryPage = () => {
-  // Fixed: Use the correct function name from your store
+  // Updated to use correct store methods for PouchDB-only setup
   const { 
     inventory, 
     stats, 
     isLoading, 
-    isOnline,
-    initialize, // Use initialize instead of initializeFromCache
-    fetchFromRemote, // Use fetchFromRemote instead of fetchInventory
-    forceSync, // Use forceSync instead of syncWithDatabase
-    getProductById, // For getting individual products
-    getRecentlySoldOutBatches, // You'll need to implement this if it doesn't exist
-    getConnectionStatus, // For getting cache stats and sync time
-    error 
+    isInitialized,
+    initialize,
+    refreshInventory, // This is the correct function for PouchDB refresh
+    getProductById,
+    getRecentlySoldOutBatches,
+    getConnectionStatus,
+    checkPouchDBHealth, // PouchDB health check
+    error,
+    lastUpdateTime
   } = useInventoryStore();
   
   const { updateProduct } = useProductStore();
@@ -312,39 +309,52 @@ const InventoryPage = () => {
   const [cacheStats, setCacheStats] = useState(null);
   const [lastSyncTime, setLastSyncTime] = useState(null);
   const [showErrorDetails, setShowErrorDetails] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState({});
   
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
   const cacheStatsIntervalRef = useRef(null);
   const itemsPerPage = 50;
 
-  // Fixed: Use the correct initialization function
+  // Initialize the store
   useEffect(() => {
-    initialize();
-  }, [initialize]);
+    if (!isInitialized) {
+      initialize();
+    }
+  }, [initialize, isInitialized]);
 
-  // Fixed: Update cache stats using the available store methods
+  // Update cache stats and connection status for PouchDB
   useEffect(() => {
     const updateCacheStats = async () => {
       try {
-        const connectionStatus = getConnectionStatus();
+        const connStatus = getConnectionStatus();
+        setConnectionStatus(connStatus);
+        setLastSyncTime(connStatus.lastUpdateTime || lastUpdateTime);
         
-        // Create mock cache stats based on available data
-        const mockCacheStats = {
-          healthy: connectionStatus.isInitialized && !connectionStatus.error,
-          isStale: !connectionStatus.lastSyncTime || 
-                   (new Date() - new Date(connectionStatus.lastSyncTime)) > (2 * 60 * 60 * 1000), // 2 hours
-          productsCount: inventory.length,
-          totalSize: inventory.length * 1024, // Rough estimate
-        };
-        
-        setCacheStats(mockCacheStats);
-        setLastSyncTime(connectionStatus.lastSyncTime);
+        // Try to get PouchDB health if available
+        if (typeof checkPouchDBHealth === 'function') {
+          const healthCheck = await checkPouchDBHealth();
+          setCacheStats({
+            healthy: healthCheck.healthy,
+            productsCount: healthCheck.totalProducts || inventory.length,
+            totalBatches: healthCheck.totalBatches || 0,
+            totalSize: healthCheck.cacheSize || inventory.length * 1024,
+          });
+        } else {
+          // Fallback cache stats
+          setCacheStats({
+            healthy: connStatus.isInitialized && !connStatus.error,
+            productsCount: inventory.length,
+            totalBatches: inventory.reduce((total, product) => 
+              total + (product.batches?.length || 0), 0),
+            totalSize: inventory.length * 1024, // Rough estimate
+          });
+        }
       } catch (error) {
         console.error('Error fetching cache stats:', error);
         setCacheStats({
           healthy: false,
-          isStale: true,
           productsCount: 0,
+          totalBatches: 0,
           totalSize: 0
         });
       }
@@ -358,7 +368,7 @@ const InventoryPage = () => {
         clearInterval(cacheStatsIntervalRef.current);
       }
     };
-  }, [getConnectionStatus, inventory.length]);
+  }, [getConnectionStatus, checkPouchDBHealth, inventory.length, lastUpdateTime]);
 
   const filteredInventory = useMemo(() => {
     let result = inventory;
@@ -380,15 +390,14 @@ const InventoryPage = () => {
     return result;
   }, [inventory, debouncedSearchTerm, filters]);
   
-  // Fixed: Create a fallback for recently sold out batches
+  // Get recently sold out batches
   const recentlySoldOutBatches = useMemo(() => {
     try {
-      // If the function exists, use it
       if (typeof getRecentlySoldOutBatches === 'function') {
         return getRecentlySoldOutBatches();
       }
       
-      // Otherwise, create a fallback implementation
+      // Fallback implementation
       const soldOutBatches = [];
       const now = new Date();
       const recentThreshold = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000); // 7 days ago
@@ -409,7 +418,7 @@ const InventoryPage = () => {
         }
       });
       
-      return soldOutBatches;
+      return soldOutBatches.sort((a, b) => new Date(b.soldOutAt) - new Date(a.soldOutAt));
     } catch (error) {
       console.error('Error getting recently sold out batches:', error);
       return [];
@@ -477,29 +486,36 @@ const InventoryPage = () => {
     }
   }, [editingModalData.product, updateProduct, handleCloseEditModal]);
 
-  // Fixed: Use the correct sync function
+  // Updated refresh function to use refreshInventory instead of forceSync
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      await forceSync();
+      const result = await refreshInventory();
       
-      // Update cache stats after sync
-      const connectionStatus = getConnectionStatus();
-      const mockCacheStats = {
-        healthy: connectionStatus.isInitialized && !connectionStatus.error,
-        isStale: false, // Just synced, so not stale
-        productsCount: inventory.length,
-        totalSize: inventory.length * 1024,
-      };
-      
-      setCacheStats(mockCacheStats);
-      setLastSyncTime(connectionStatus.lastSyncTime);
+      if (result.success) {
+        // Update cache stats after refresh
+        const connStatus = getConnectionStatus();
+        setConnectionStatus(connStatus);
+        setLastSyncTime(connStatus.lastUpdateTime || new Date());
+        
+        if (typeof checkPouchDBHealth === 'function') {
+          const healthCheck = await checkPouchDBHealth();
+          setCacheStats({
+            healthy: healthCheck.healthy,
+            productsCount: healthCheck.totalProducts || inventory.length,
+            totalBatches: healthCheck.totalBatches || 0,
+            totalSize: healthCheck.cacheSize || inventory.length * 1024,
+          });
+        }
+      } else {
+        console.error('Refresh failed:', result.error);
+      }
     } catch (error) {
       console.error('Error refreshing inventory:', error);
     } finally {
       setIsRefreshing(false);
     }
-  }, [forceSync, getConnectionStatus, inventory.length]);
+  }, [refreshInventory, getConnectionStatus, checkPouchDBHealth, inventory.length]);
 
   const handleDismissError = useCallback(() => {
     setShowErrorDetails(false);
@@ -514,7 +530,7 @@ const InventoryPage = () => {
       <div className="flex justify-center items-center h-full dark:text-white">
         <div className="flex flex-col items-center space-y-4">
           <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-purple-600"></div>
-          <p>Loading Inventory...</p>
+          <p>Loading Inventory from PouchDB...</p>
         </div>
       </div>
     );
@@ -534,7 +550,7 @@ const InventoryPage = () => {
             Inventory Management
           </h1>
           <p className="text-slate-500 dark:text-dark-text-secondary">
-            Track stock levels, expirations, and more.
+            Track stock levels, expirations, and more with PouchDB.
           </p>
         </div>
         
@@ -544,7 +560,7 @@ const InventoryPage = () => {
           lastSyncTime={lastSyncTime}
           onRefresh={handleRefresh}
           isRefreshing={isRefreshing}
-          isOnline={isOnline}
+          connectionStatus={connectionStatus}
         />
       </header>
 

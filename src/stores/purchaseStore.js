@@ -1,6 +1,6 @@
-// purchaseStore.js - Fixed performance monitor with unique timer IDs
+// purchaseStore.js - PouchDB-only implementation
 import { create } from 'zustand';
-import axios from 'axios';
+import { purchasesDB } from '../utils/cache/databases.js';
 import { useProductStore } from './productStore.js';
 import { useInventoryStore } from './inventoryStore.js';
 import { useSupplierStore } from './supplierStore.js';
@@ -16,11 +16,7 @@ const PERFORMANCE_CONFIG = {
   STALE_TIME: 2 * 60 * 1000, // 2 minutes
 };
 
-const PURCHASES_DB_URL = 'http://localhost:5984/purchases';
-const PRODUCTS_DB_URL = 'http://localhost:5984/products';
-const DB_AUTH = { auth: { username: 'admin', password: 'mynewsecretpassword' } };
-
-// Fixed performance monitor with unique timer IDs
+// Performance monitor with unique timer IDs
 const perfMonitor = {
   activeTimers: new Set(),
   
@@ -46,16 +42,13 @@ const perfMonitor = {
     }
   },
   
-  // Alternative method that doesn't require returning timer ID
   measure: (operation, fn) => {
     const timerId = perfMonitor.start(operation);
     const result = fn();
     
     if (result && typeof result.then === 'function') {
-      // Handle async functions
       return result.finally(() => perfMonitor.end(timerId));
     } else {
-      // Handle sync functions
       perfMonitor.end(timerId);
       return result;
     }
@@ -71,8 +64,8 @@ const debounce = (func, delay) => {
   };
 };
 
-// Simple cache for purchases
-class PurchaseCache {
+// Memory cache for frequently accessed data
+class MemoryCache {
   constructor() {
     this.cache = new Map();
     this.timestamps = new Map();
@@ -99,7 +92,7 @@ class PurchaseCache {
   }
 }
 
-const purchaseCache = new PurchaseCache();
+const memoryCache = new MemoryCache();
 
 // Batch processing utility
 const processBatch = async (items, processor, batchSize = PERFORMANCE_CONFIG.BATCH_SIZE) => {
@@ -112,6 +105,11 @@ const processBatch = async (items, processor, batchSize = PERFORMANCE_CONFIG.BAT
     results.push(...batchResults);
   }
   return results;
+};
+
+// Generate unique ID for new documents
+const generateId = () => {
+  return `purchase_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 };
 
 export const usePurchaseStore = create((set, get) => ({
@@ -145,13 +143,13 @@ export const usePurchaseStore = create((set, get) => ({
         });
 
         // Initialize with cached data first if available
-        const cached = purchaseCache.get('all_purchases');
+        const cached = memoryCache.get('all_purchases');
         if (cached) {
           set({ purchases: cached });
-          console.log('🚀 Loaded purchases from cache');
+          console.log('🚀 Loaded purchases from memory cache');
         }
 
-        // Fetch fresh data
+        // Fetch fresh data from PouchDB
         await get().fetchPurchases(true);
         
         set({ 
@@ -217,23 +215,23 @@ export const usePurchaseStore = create((set, get) => ({
     return {
       ...state.performanceMetrics,
       totalPurchases: state.purchases.length,
-      cacheStatus: purchaseCache.cache.size > 0 ? 'active' : 'empty',
+      cacheStatus: memoryCache.cache.size > 0 ? 'active' : 'empty',
       lastFetchTime: state.lastFetchTime,
       isInitialized: state.isInitialized
     };
   },
 
   // =================================================================
-  //  OPTIMIZED FETCH WITH CACHING
+  //  POUCHDB FETCH WITH CACHING
   // =================================================================
 
   fetchPurchases: async (forceRefresh = false) => {
     return perfMonitor.measure('fetchPurchases', async () => {
       const startTime = Date.now();
       
-      // Check cache first
+      // Check memory cache first
       if (!forceRefresh) {
-        const cached = purchaseCache.get('all_purchases');
+        const cached = memoryCache.get('all_purchases');
         if (cached) {
           set({ 
             purchases: cached, 
@@ -258,22 +256,23 @@ export const usePurchaseStore = create((set, get) => ({
       set({ isLoading: true, connectionStatus: 'connecting' });
       
       try {
-        const response = await axios.get(
-          `${PURCHASES_DB_URL}/_all_docs?include_docs=true`,
-          DB_AUTH
-        );
+        // Fetch from PouchDB
+        const result = await purchasesDB.allDocs({ 
+          include_docs: true,
+          descending: true 
+        });
         
-        const allPurchases = response.data.rows
+        const allPurchases = result.rows
           .map(row => row.doc)
-          .filter(doc => doc && !doc._deleted);
+          .filter(doc => doc && !doc._deleted && doc.type !== 'PURCHASE_RETURN');
         
-        // Optimized sorting - use single pass
+        // Sort by creation date
         const sortedPurchases = allPurchases.sort((a, b) => 
           new Date(b.createdAt) - new Date(a.createdAt)
         );
 
-        // Cache the results
-        purchaseCache.set('all_purchases', sortedPurchases);
+        // Cache the results in memory
+        memoryCache.set('all_purchases', sortedPurchases);
         
         const endTime = Date.now();
         const responseTime = endTime - startTime;
@@ -298,7 +297,7 @@ export const usePurchaseStore = create((set, get) => ({
         });
         
       } catch (error) {
-        console.error("Error fetching purchases:", error.response?.data || error.message);
+        console.error("Error fetching purchases from PouchDB:", error);
         set({ 
           isLoading: false,
           connectionStatus: 'disconnected'
@@ -309,7 +308,7 @@ export const usePurchaseStore = create((set, get) => ({
   },
 
   // =================================================================
-  //  OPTIMIZED ADD PURCHASE WITH BATCH PROCESSING
+  //  POUCHDB ADD PURCHASE WITH BATCH PROCESSING
   // =================================================================
 
   addPurchase: async (purchaseData) => {
@@ -322,27 +321,34 @@ export const usePurchaseStore = create((set, get) => ({
         const amountDue = grandTotal - amountPaid;
 
         const purchaseRecord = {
+          _id: generateId(),
           ...purchaseData,
           amountPaid: amountPaid,
           amountDue: amountDue,
           createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
           status: amountDue <= 0 ? 'Paid' : 'Partially Paid',
           type: 'PURCHASE'
         };
 
-        // Save purchase record first
-        const purchaseResponse = await axios.post(PURCHASES_DB_URL, purchaseRecord, DB_AUTH);
+        // Save purchase record to PouchDB
+        const purchaseResponse = await purchasesDB.put(purchaseRecord);
 
         // Update supplier balance in parallel with product updates
         const supplierUpdatePromise = supplierId 
           ? useSupplierStore.getState()._updateSupplierBalance(supplierId, amountDue)
           : Promise.resolve();
 
-        // Process items in batches to avoid overwhelming the database
+        // Process items in batches to update products
         const itemProcessor = async (item) => {
           try {
-            const productRes = await axios.get(`${PRODUCTS_DB_URL}/${item.productId}`, DB_AUTH);
-            const productToUpdate = productRes.data;
+            const productStore = useProductStore.getState();
+            const product = await productStore.getProductById(item.productId);
+            
+            if (!product) {
+              console.warn(`Product ${item.productId} not found`);
+              return { success: false, item, error: 'Product not found' };
+            }
 
             const newBatch = {
               id: `batch-${Date.now()}-${Math.random()}`,
@@ -354,14 +360,18 @@ export const usePurchaseStore = create((set, get) => ({
               expDate: item.expDate,
             };
 
-            productToUpdate.batches = [...(productToUpdate.batches || []), newBatch];
+            const productToUpdate = {
+              ...product,
+              batches: [...(product.batches || []), newBatch],
+              updatedAt: new Date().toISOString()
+            };
             
             // Update retail price if higher
             if (!productToUpdate.retailPrice || Number(item.retailPrice) > productToUpdate.retailPrice) {
               productToUpdate.retailPrice = newBatch.retailPrice;
             }
 
-            await useProductStore.getState().updateProduct(productToUpdate);
+            await productStore.updateProduct(productToUpdate);
 
             return { success: true, item };
           } catch (error) {
@@ -389,7 +399,7 @@ export const usePurchaseStore = create((set, get) => ({
                 advanceTax: Number(item.advanceTax) || 0,
                 batchNumber: item.batchNumber,
                 supplierName: purchaseData.supplierName,
-                purchaseId: purchaseResponse.data.id
+                purchaseId: purchaseResponse.id
               }
             });
           });
@@ -399,7 +409,7 @@ export const usePurchaseStore = create((set, get) => ({
         await supplierUpdatePromise;
 
         // Clear cache to force refresh
-        purchaseCache.clear();
+        memoryCache.clear();
 
         // Refresh data in background
         setTimeout(() => {
@@ -411,7 +421,7 @@ export const usePurchaseStore = create((set, get) => ({
 
         set({ isLoading: false });
         
-        return { success: true, id: purchaseResponse.data.id };
+        return { success: true, id: purchaseResponse.id };
 
       } catch (error) {
         console.error("Error during add purchase:", error);
@@ -428,7 +438,7 @@ export const usePurchaseStore = create((set, get) => ({
   },
 
   // =================================================================
-  //  OPTIMIZED RETURN PURCHASE
+  //  POUCHDB RETURN PURCHASE
   // =================================================================
 
   returnPurchase: async (returnData, refundChoice) => {
@@ -472,6 +482,7 @@ export const usePurchaseStore = create((set, get) => ({
 
         // Create return record
         const returnRecord = {
+          _id: `return_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           type: 'PURCHASE_RETURN',
           originalPurchaseId: originalPurchase._id,
           supplierId: originalPurchase.supplierId,
@@ -492,11 +503,12 @@ export const usePurchaseStore = create((set, get) => ({
             creditNoteAmount: refundChoice.creditNoteAmount || 0,
           },
           createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         };
 
         // Save return record and update supplier in parallel
         const [returnResponse] = await Promise.all([
-          axios.post(PURCHASES_DB_URL, returnRecord, DB_AUTH),
+          purchasesDB.put(returnRecord),
           supplier ? useSupplierStore.getState()._updateSupplierBalance(supplier._id, finalBalanceChange) : Promise.resolve()
         ]);
 
@@ -516,23 +528,29 @@ export const usePurchaseStore = create((set, get) => ({
         const totalReturnedQty = purchaseToUpdate.items.reduce((sum, item) => sum + (item.returnedQty || 0), 0);
         const totalOriginalQty = purchaseToUpdate.items.reduce((sum, item) => sum + item.qty, 0);
         purchaseToUpdate.status = totalReturnedQty >= totalOriginalQty ? 'Fully Returned' : 'Partially Returned';
+        purchaseToUpdate.updatedAt = new Date().toISOString();
         
-        await axios.put(`${PURCHASES_DB_URL}/${purchaseToUpdate._id}`, purchaseToUpdate, DB_AUTH);
+        await purchasesDB.put(purchaseToUpdate);
 
         // Process product updates in batches
         const productProcessor = async (item) => {
           try {
-            const productRes = await axios.get(`${PRODUCTS_DB_URL}/${item.productId}`, DB_AUTH);
-            const productToUpdate = productRes.data;
+            const productStore = useProductStore.getState();
+            const product = await productStore.getProductById(item.productId);
             
-            if (!productToUpdate.batches) productToUpdate.batches = [];
+            if (!product || !product.batches) return { success: false, item, error: 'Product or batches not found' };
 
-            const batchToUpdate = productToUpdate.batches.find(b => b.batchNumber === item.batchNumber);
+            const batchToUpdate = product.batches.find(b => b.batchNumber === item.batchNumber);
             if (batchToUpdate) {
               batchToUpdate.quantity = Math.max(0, (Number(batchToUpdate.quantity) || 0) - item.returnQty);
             }
 
-            await useProductStore.getState().updateProduct(productToUpdate);
+            const updatedProduct = {
+              ...product,
+              updatedAt: new Date().toISOString()
+            };
+
+            await productStore.updateProduct(updatedProduct);
             return { success: true, item };
           } catch (error) {
             console.error(`Error updating product ${item.productId}:`, error);
@@ -560,7 +578,7 @@ export const usePurchaseStore = create((set, get) => ({
         }, 0);
 
         // Clear cache and refresh data
-        purchaseCache.clear();
+        memoryCache.clear();
         
         setTimeout(() => {
           get().fetchPurchases(true);
@@ -585,9 +603,91 @@ export const usePurchaseStore = create((set, get) => ({
   //  UTILITY METHODS
   // =================================================================
 
+  // Get purchase by ID
+  getPurchaseById: async (id) => {
+    try {
+      const purchase = await purchasesDB.get(id);
+      return purchase;
+    } catch (error) {
+      if (error.name === 'not_found') return null;
+      throw error;
+    }
+  },
+
+  // Update purchase
+  updatePurchase: async (purchaseData) => {
+    try {
+      const updatedPurchase = {
+        ...purchaseData,
+        updatedAt: new Date().toISOString()
+      };
+      
+      const response = await purchasesDB.put(updatedPurchase);
+      
+      // Clear memory cache
+      memoryCache.clear();
+      
+      // Refresh purchases
+      get().fetchPurchases(true);
+      
+      return { success: true, rev: response.rev };
+    } catch (error) {
+      console.error('Error updating purchase:', error);
+      return { success: false, message: error.message };
+    }
+  },
+
+  // Delete purchase
+  deletePurchase: async (id) => {
+    try {
+      const purchase = await purchasesDB.get(id);
+      await purchasesDB.remove(purchase);
+      
+      // Clear memory cache
+      memoryCache.clear();
+      
+      // Refresh purchases
+      get().fetchPurchases(true);
+      
+      return { success: true };
+    } catch (error) {
+      console.error('Error deleting purchase:', error);
+      return { success: false, message: error.message };
+    }
+  },
+
+  // Search purchases
+  searchPurchases: async (keyword = '') => {
+    if (!keyword) return get().purchases;
+    
+    try {
+      const result = await purchasesDB.allDocs({ include_docs: true });
+      const lower = keyword.toLowerCase();
+      
+      return result.rows
+        .map(row => row.doc)
+        .filter(purchase => 
+          purchase && !purchase._deleted &&
+          (
+            (purchase.invoiceNumber || purchase._id).toLowerCase().includes(lower) ||
+            purchase.supplierName?.toLowerCase().includes(lower) ||
+            purchase.notes?.toLowerCase().includes(lower) ||
+            purchase.items?.some(item => 
+              item.productName?.toLowerCase().includes(lower) ||
+              item.batchNumber?.toLowerCase().includes(lower)
+            )
+          )
+        )
+        .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    } catch (error) {
+      console.error('Error searching purchases:', error);
+      return [];
+    }
+  },
+
   // Clear cache manually
   clearCache: () => {
-    purchaseCache.clear();
+    memoryCache.clear();
   },
 
   // Get purchases by date range (optimized)
@@ -600,5 +700,41 @@ export const usePurchaseStore = create((set, get) => ({
       const purchaseDate = new Date(purchase.createdAt);
       return purchaseDate >= start && purchaseDate <= end;
     });
+  },
+
+  // Get purchases by supplier
+  getPurchasesBySupplier: (supplierId) => {
+    const { purchases } = get();
+    return purchases.filter(purchase => purchase.supplierId === supplierId);
+  },
+
+  // Get purchase statistics
+  getPurchaseStats: () => {
+    const { purchases } = get();
+    
+    const stats = {
+      totalPurchases: purchases.length,
+      totalValue: purchases.reduce((sum, p) => sum + (p.totals?.grandTotal || 0), 0),
+      totalPaid: purchases.reduce((sum, p) => sum + (p.amountPaid || 0), 0),
+      totalDue: purchases.reduce((sum, p) => sum + (p.amountDue || 0), 0),
+      byStatus: {},
+      byPaymentStatus: {},
+      recentCount: purchases.filter(p => {
+        const days = (new Date() - new Date(p.createdAt)) / (1000 * 60 * 60 * 24);
+        return days <= 30;
+      }).length
+    };
+
+    // Calculate status distribution
+    purchases.forEach(purchase => {
+      const status = purchase.status || 'Completed';
+      stats.byStatus[status] = (stats.byStatus[status] || 0) + 1;
+      
+      const paymentStatus = purchase.amountDue <= 0 ? 'Paid' : 
+                           purchase.amountPaid > 0 ? 'Partially Paid' : 'Unpaid';
+      stats.byPaymentStatus[paymentStatus] = (stats.byPaymentStatus[paymentStatus] || 0) + 1;
+    });
+
+    return stats;
   }
 }));

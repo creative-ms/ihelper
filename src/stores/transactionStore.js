@@ -1,14 +1,6 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
-import axios from 'axios';
 import CacheManager from '../utils/cache/index.js';
-
-const SALES_DB_URL = 'http://localhost:5984/sales';
-const RETURNS_DB_URL = SALES_DB_URL;
-
-const DB_AUTH = {
-  auth: { username: 'admin', password: 'mynewsecretpassword' }
-};
 
 // Custom storage with better quota management
 const customStorage = {
@@ -54,404 +46,223 @@ export const useTransactionStore = create(
       totalInvoices: 0,
       lastFetchTimestamp: null,
       isInitialized: false,
-      isOnline: navigator.onLine,
 
       /**
-       * Initialize with cached data immediately - no loading
+       * Initialize from PouchDB cache
        */
       initializeFromCache: async () => {
         const state = get();
         if (!state.isInitialized) {
           try {
-            // Load from PouchDB cache first
+            console.log('🔄 Initializing from PouchDB cache...');
+            
+            // Load from PouchDB cache
             const cachedData = await CacheManager.getCachedInvoices({ 
               page: 1, 
               pageSize: 25 
             });
             
-            if (cachedData.invoices.length > 0) {
-              set({
-                invoices: cachedData.invoices,
-                totalInvoices: cachedData.totalInvoices,
-                isInitialized: true
-              });
-            } else {
-              set({ isInitialized: true });
-            }
-
-            // Check if cache is stale and needs refresh
-            const isStale = await CacheManager.isTransactionCacheStale(0.5); // 30 minutes
-            
-            if (isStale && navigator.onLine) {
-              // Start background sync
-              setTimeout(() => {
-                state.syncWithServer();
-              }, 100);
-            }
-          } catch (error) {
-            console.error('Error initializing from cache:', error);
-            set({ isInitialized: true });
-          }
-        }
-      },
-
-      /**
-       * Sync with server and update cache
-       */
-      syncWithServer: async () => {
-        if (!navigator.onLine) {
-          console.log('📱 Offline mode - using cached data');
-          return;
-        }
-
-        try {
-          console.log('🔄 Syncing transactions with server...');
-          
-          // Fetch fresh invoices from server
-          const invoicesQuery = {
-            selector: {
-              type: 'SALE',
-              createdAt: { $gte: '2000-01-01T00:00:00Z' }
-            },
-            limit: 500, // Increased limit for better caching
-            sort: [{ createdAt: 'desc' }],
-            use_index: 'sales-by-date-desc-index'
-          };
-
-          const invoicesResponse = await axios.post(
-            `${SALES_DB_URL}/_find`,
-            invoicesQuery,
-            DB_AUTH
-          );
-
-          // Fetch fresh returns from server
-          const returnsQuery = {
-            selector: {
-              type: 'RETURN'
-            },
-            limit: 200,
-            use_index: 'returns-by-invoice-index'
-          };
-
-          const returnsResponse = await axios.post(
-            `${RETURNS_DB_URL}/_find`,
-            returnsQuery,
-            DB_AUTH
-          );
-
-          // Cache the fresh data
-          await CacheManager.cacheInvoices(invoicesResponse.data.docs);
-          await CacheManager.cacheReturns(returnsResponse.data.docs);
-
-          // Update sync metadata
-          await CacheManager.updateSyncMetadata('transactions', invoicesResponse.data.docs.length);
-          await CacheManager.updateSyncMetadata('returns', returnsResponse.data.docs.length);
-
-          console.log('✅ Transaction sync completed');
-
-          // If user is on the first page, update UI
-          const state = get();
-          if (state.invoices.length === 0) {
-            const freshData = await CacheManager.getCachedInvoices({ 
-              page: 1, 
-              pageSize: 25 
-            });
-            
             set({
-              invoices: freshData.invoices,
-              totalInvoices: freshData.totalInvoices,
+              invoices: cachedData.invoices,
+              totalInvoices: cachedData.totalInvoices,
+              isInitialized: true,
               lastFetchTimestamp: new Date().toISOString()
             });
-          }
 
-        } catch (error) {
-          console.error('❌ Error syncing with server:', error);
-          // Continue with cached data
+            console.log(`✅ Initialized with ${cachedData.invoices.length} cached invoices`);
+          } catch (error) {
+            console.error('Error initializing from cache:', error);
+            set({ 
+              isInitialized: true,
+              invoices: [],
+              totalInvoices: 0 
+            });
+          }
         }
       },
 
       /**
-       * Fetch paginated invoices (cache-first approach)
+       * Fetch paginated invoices from PouchDB
        */
       fetchInvoices: async ({ searchTerm = '', page = 1, pageSize = 25 } = {}) => {
-        const state = get();
-        
-        // Show loading for search or pagination
-        const shouldShowLoading = searchTerm || page > 1;
-        if (shouldShowLoading) {
-          set({ isLoading: true, error: null });
-        }
+        set({ isLoading: true, error: null });
 
         try {
-          // Try cache first
+          console.log(`🔍 Fetching invoices from PouchDB - Page ${page}, Search: "${searchTerm}"`);
+          
           const cachedData = await CacheManager.getCachedInvoices({
             searchTerm,
             page,
             pageSize
           });
 
-          // If we have cached data, use it
-          if (cachedData.invoices.length > 0 || !navigator.onLine) {
-            set({
-              invoices: cachedData.invoices,
-              totalInvoices: cachedData.totalInvoices,
-              isLoading: false,
-              lastFetchTimestamp: new Date().toISOString()
-            });
+          set({
+            invoices: cachedData.invoices,
+            totalInvoices: cachedData.totalInvoices,
+            isLoading: false,
+            lastFetchTimestamp: new Date().toISOString(),
+            error: null
+          });
 
-            // If online and cache might be stale, sync in background
-            if (navigator.onLine) {
-              const isStale = await CacheManager.isTransactionCacheStale(0.5);
-              if (isStale) {
-                setTimeout(() => state.syncWithServer(), 100);
-              }
-            }
-            
-            return;
-          }
-
-          // Fallback to server if cache is empty and we're online
-          if (navigator.onLine) {
-            await state.fetchFromServer({ searchTerm, page, pageSize });
-          } else {
-            // Offline with no cache
-            set({
-              invoices: [],
-              totalInvoices: 0,
-              isLoading: false,
-              error: 'No cached data available offline'
-            });
-          }
+          console.log(`✅ Fetched ${cachedData.invoices.length} invoices from PouchDB`);
 
         } catch (error) {
-          console.error('❌ Error fetching invoices:', error);
+          console.error('❌ Error fetching invoices from PouchDB:', error);
           set({
-            error: 'Failed to fetch invoices',
+            error: 'Failed to fetch invoices from local database',
             isLoading: false
           });
         }
       },
 
       /**
-       * Fetch from server (fallback method)
+       * Add new invoice
        */
-      fetchFromServer: async ({ searchTerm = '', page = 1, pageSize = 25 } = {}) => {
+      addInvoice: async (newInvoice) => {
         try {
-          const skip = (page - 1) * pageSize;
-
-          let selector = {
+          console.log('💾 Adding new invoice to PouchDB...');
+          
+          // Ensure the invoice has required fields
+          const invoiceData = {
+            _id: newInvoice._id || `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
             type: 'SALE',
-            createdAt: { $gte: '2000-01-01T00:00:00Z' }
+            ...newInvoice,
+            createdAt: newInvoice.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: newInvoice.status || 'completed'
           };
 
-          if (searchTerm.trim()) {
-            selector.$or = [
-              { _id: { $regex: `(?i).*${searchTerm}.*` } },
-              { customerName: { $regex: `(?i).*${searchTerm}.*` } }
-            ];
-          }
-
-          // Get total count
-          const countQuery = {
-            selector,
-            fields: ['_id'],
-            limit: 1000,
-            use_index: 'sales-by-date-desc-index'
-          };
-
-          const countRes = await axios.post(
-            `${SALES_DB_URL}/_find`,
-            countQuery,
-            DB_AUTH
-          );
-
-          // Fetch paginated invoices
-          const salesQuery = {
-            selector,
-            limit: pageSize,
-            skip,
-            sort: [{ createdAt: 'desc' }],
-            use_index: 'sales-by-date-desc-index'
-          };
-
-          const salesRes = await axios.post(
-            `${SALES_DB_URL}/_find`,
-            salesQuery,
-            DB_AUTH
-          );
-
-          const salesDocs = salesRes.data.docs;
-
-          // Fetch returns for these invoices
-          const invoiceIds = salesDocs.map((doc) => doc._id);
-          let relatedReturns = [];
-
-          if (invoiceIds.length > 0) {
-            const returnsQuery = {
-              selector: {
-                type: 'RETURN',
-                originalInvoiceId: { $in: invoiceIds }
-              },
-              use_index: 'returns-by-invoice-index',
-              limit: 200
-            };
-
-            const returnsRes = await axios.post(
-              `${RETURNS_DB_URL}/_find`,
-              returnsQuery,
-              DB_AUTH
-            );
-
-            relatedReturns = returnsRes.data.docs;
-          }
-
-          // Group returns by invoice ID
-          const returnsMap = new Map();
-          relatedReturns.forEach((r) => {
-            if (!returnsMap.has(r.originalInvoiceId)) {
-              returnsMap.set(r.originalInvoiceId, []);
-            }
-            returnsMap.get(r.originalInvoiceId).push(r);
-          });
-
-          // Attach returns to invoices
-          const salesWithReturns = salesDocs.map((sale) => ({
-            ...sale,
-            relatedReturns: returnsMap.get(sale._id) || []
-          }));
-
+          // Add to PouchDB cache
+          await CacheManager.addInvoiceToCache(invoiceData);
+          
+          // Update UI state
+          const state = get();
+          const currentInvoices = state.invoices;
+          
           set({
-            invoices: salesWithReturns,
-            isLoading: false,
-            totalInvoices: countRes.data.docs.length,
+            invoices: [invoiceData, ...currentInvoices.slice(0, 24)],
+            totalInvoices: state.totalInvoices + 1,
             lastFetchTimestamp: new Date().toISOString()
           });
 
-          // Cache the fetched data for future use
-          if (salesDocs.length > 0) {
-            await CacheManager.cacheInvoices(salesDocs);
-          }
-          if (relatedReturns.length > 0) {
-            await CacheManager.cacheReturns(relatedReturns);
-          }
+          console.log(`✅ Added invoice ${invoiceData._id} successfully`);
+          return invoiceData;
 
         } catch (error) {
-          console.error('❌ Error fetching from server:', error);
+          console.error('❌ Error adding invoice:', error);
+          set({ error: 'Failed to add invoice' });
           throw error;
         }
       },
 
       /**
-       * Fetch unpaid invoices for a customer (cache-first)
+       * Update existing invoice
        */
-      fetchUnpaidInvoicesForCustomer: async (customerId) => {
-        if (!customerId) return [];
-
+      updateInvoice: async (invoiceId, updates) => {
         try {
-          // Try cache first
-          const cachedUnpaid = await CacheManager.getCachedUnpaidInvoicesForCustomer(customerId);
+          console.log(`🔄 Updating invoice ${invoiceId}...`);
           
-          if (cachedUnpaid.length > 0 || !navigator.onLine) {
-            return cachedUnpaid;
+          // Get existing invoice
+          const existingInvoice = await CacheManager.getCachedInvoiceById(invoiceId);
+          if (!existingInvoice) {
+            throw new Error('Invoice not found');
           }
 
-          // Fallback to server
-          const query = {
-            selector: {
-              customerId,
-              type: 'SALE'
-            },
-            sort: [
-              { customerId: 'asc' },
-              { type: 'asc' }, 
-              { createdAt: 'asc' }
-            ],
-            use_index: 'sales-by-customer-index'
+          // Merge updates
+          const updatedInvoice = {
+            ...existingInvoice,
+            ...updates,
+            updatedAt: new Date().toISOString()
           };
 
-          const res = await axios.post(
-            `${SALES_DB_URL}/_find`,
-            query,
-            DB_AUTH
-          );
-
-          const salesDocs = res.data.docs;
-
-          // Fetch related returns
-          const invoiceIds = salesDocs.map((doc) => doc._id);
-          let relatedReturns = [];
-
-          if (invoiceIds.length > 0) {
-            const returnsQuery = {
-              selector: {
-                type: 'RETURN',
-                originalInvoiceId: { $in: invoiceIds }
-              },
-              use_index: 'returns-by-invoice-index',
-              limit: 200
-            };
-
-            const returnsRes = await axios.post(
-              `${RETURNS_DB_URL}/_find`,
-              returnsQuery,
-              DB_AUTH
-            );
-
-            relatedReturns = returnsRes.data.docs;
+          // Update in PouchDB
+          await CacheManager.updateInvoiceInCache(updatedInvoice);
+          
+          // Update UI state
+          const state = get();
+          const currentInvoices = state.invoices;
+          const invoiceIndex = currentInvoices.findIndex(inv => inv._id === invoiceId);
+          
+          if (invoiceIndex !== -1) {
+            const updatedInvoices = [...currentInvoices];
+            updatedInvoices[invoiceIndex] = updatedInvoice;
+            
+            set({
+              invoices: updatedInvoices,
+              lastFetchTimestamp: new Date().toISOString()
+            });
           }
 
-          const returnsMap = new Map();
-          relatedReturns.forEach((r) => {
-            if (!returnsMap.has(r.originalInvoiceId)) {
-              returnsMap.set(r.originalInvoiceId, []);
-            }
-            returnsMap.get(r.originalInvoiceId).push(r);
-          });
-
-          const unpaidInvoices = salesDocs.filter((invoice) => {
-            const returns = returnsMap.get(invoice._id) || [];
-            const totalReturned = returns.reduce(
-              (sum, r) => sum + (r.totalReturnValue || 0),
-              0
-            );
-
-            const netPayable =
-              (invoice.total || 0) - (invoice.amountPaid || 0) - totalReturned;
-
-            return netPayable > 0.01;
-          });
-
-          return unpaidInvoices.sort(
-            (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
-          );
+          console.log(`✅ Updated invoice ${invoiceId} successfully`);
+          return updatedInvoice;
 
         } catch (error) {
-          console.error('Error fetching unpaid invoices:', error);
-          return [];
+          console.error('❌ Error updating invoice:', error);
+          set({ error: 'Failed to update invoice' });
+          throw error;
         }
       },
 
       /**
-       * Add new invoice to cache and UI
+       * Delete invoice
        */
-      addNewInvoice: async (newInvoice) => {
+      deleteInvoice: async (invoiceId) => {
         try {
-          // Add to cache
-          await CacheManager.addInvoiceToCache(newInvoice);
+          console.log(`🗑️ Deleting invoice ${invoiceId}...`);
           
-          // Update UI if user is on first page
+          // Remove from PouchDB
+          await CacheManager.removeInvoiceFromCache(invoiceId);
+          
+          // Update UI state
           const state = get();
           const currentInvoices = state.invoices;
+          const filteredInvoices = currentInvoices.filter(inv => inv._id !== invoiceId);
           
-          if (currentInvoices.length > 0) {
-            set({
-              invoices: [newInvoice, ...currentInvoices.slice(0, 24)],
-              totalInvoices: state.totalInvoices + 1,
-              lastFetchTimestamp: new Date().toISOString()
-            });
-          }
+          set({
+            invoices: filteredInvoices,
+            totalInvoices: Math.max(0, state.totalInvoices - 1),
+            lastFetchTimestamp: new Date().toISOString()
+          });
+
+          console.log(`✅ Deleted invoice ${invoiceId} successfully`);
+
         } catch (error) {
-          console.error('Error adding new invoice:', error);
+          console.error('❌ Error deleting invoice:', error);
+          set({ error: 'Failed to delete invoice' });
+          throw error;
+        }
+      },
+
+      /**
+       * Process return for an invoice
+       */
+      processReturn: async (returnData) => {
+        try {
+          console.log(`↩️ Processing return for invoice ${returnData.originalInvoiceId}...`);
+          
+          // Ensure return has required fields
+          const returnDocument = {
+            _id: returnData._id || `RET-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+            type: 'RETURN',
+            ...returnData,
+            createdAt: returnData.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            status: returnData.status || 'completed'
+          };
+
+          // Add return to cache
+          await CacheManager.addReturnToCache(returnDocument);
+          
+          // Update invoice with return information
+          await get().updateInvoiceReturns(returnData.originalInvoiceId, returnDocument);
+
+          console.log(`✅ Processed return ${returnDocument._id} successfully`);
+          return returnDocument;
+
+        } catch (error) {
+          console.error('❌ Error processing return:', error);
+          set({ error: 'Failed to process return' });
+          throw error;
         }
       },
 
@@ -460,21 +271,15 @@ export const useTransactionStore = create(
        */
       updateInvoiceReturns: async (invoiceId, newReturnData) => {
         try {
-          // Add return to cache
-          if (newReturnData) {
-            await CacheManager.addReturnToCache(newReturnData);
-          }
-
-          // Update cache and UI
-          const state = get();
-          const currentInvoices = state.invoices;
-          const invoiceIndex = currentInvoices.findIndex(inv => inv._id === invoiceId);
+          // Get updated invoice with returns from cache
+          const updatedInvoice = await CacheManager.getCachedInvoiceById(invoiceId);
           
-          if (invoiceIndex !== -1) {
-            // Get updated invoice with returns from cache
-            const updatedInvoice = await CacheManager.getCachedInvoiceById(invoiceId);
+          if (updatedInvoice) {
+            const state = get();
+            const currentInvoices = state.invoices;
+            const invoiceIndex = currentInvoices.findIndex(inv => inv._id === invoiceId);
             
-            if (updatedInvoice) {
+            if (invoiceIndex !== -1) {
               const updatedInvoices = [...currentInvoices];
               updatedInvoices[invoiceIndex] = updatedInvoice;
 
@@ -490,54 +295,19 @@ export const useTransactionStore = create(
       },
 
       /**
-       * Get invoice by ID (cache-first)
+       * Get invoice by ID
        */
       getInvoiceById: async (invoiceId) => {
         try {
-          // Check cache first
-          const cached = await CacheManager.getCachedInvoiceById(invoiceId);
-          if (cached) return cached;
-
-          // Check current UI state
+          // Check current UI state first
           const state = get();
           const uiCached = state.invoices.find(inv => inv._id === invoiceId);
           if (uiCached) return uiCached;
 
-          // Fallback to server if online
-          if (!navigator.onLine) {
-            return null;
-          }
+          // Get from PouchDB cache
+          const cached = await CacheManager.getCachedInvoiceById(invoiceId);
+          return cached;
 
-          const res = await axios.get(`${SALES_DB_URL}/${invoiceId}`, DB_AUTH);
-          const invoice = res.data;
-
-          // Fetch related returns
-          const returnsQuery = {
-            selector: {
-              type: 'RETURN',
-              originalInvoiceId: invoiceId
-            },
-            use_index: 'returns-by-invoice-index',
-            limit: 50
-          };
-
-          const returnsRes = await axios.post(
-            `${RETURNS_DB_URL}/_find`,
-            returnsQuery,
-            DB_AUTH
-          );
-
-          invoice.relatedReturns = returnsRes.data.docs;
-
-          // Cache the fetched invoice and returns
-          await CacheManager.addInvoiceToCache(invoice);
-          if (invoice.relatedReturns.length > 0) {
-            await Promise.all(
-              invoice.relatedReturns.map(ret => CacheManager.addReturnToCache(ret))
-            );
-          }
-
-          return invoice;
         } catch (error) {
           console.error('Error fetching invoice by ID:', error);
           return null;
@@ -545,23 +315,38 @@ export const useTransactionStore = create(
       },
 
       /**
-       * Search transactions (cache-first for offline support)
+       * Fetch unpaid invoices for a customer
+       */
+      fetchUnpaidInvoicesForCustomer: async (customerId) => {
+        if (!customerId) return [];
+
+        try {
+          console.log(`🔍 Fetching unpaid invoices for customer ${customerId}...`);
+          
+          const unpaidInvoices = await CacheManager.getCachedUnpaidInvoicesForCustomer(customerId);
+          
+          console.log(`✅ Found ${unpaidInvoices.length} unpaid invoices for customer`);
+          return unpaidInvoices;
+
+        } catch (error) {
+          console.error('Error fetching unpaid invoices:', error);
+          return [];
+        }
+      },
+
+      /**
+       * Search transactions
        */
       searchTransactions: async (keyword) => {
+        if (!keyword?.trim()) return [];
+        
         try {
-          // Try offline search first
-          const offlineResults = await CacheManager.searchTransactionsOffline(keyword);
+          console.log(`🔍 Searching transactions for: "${keyword}"`);
           
-          if (offlineResults.length > 0 || !navigator.onLine) {
-            return offlineResults;
-          }
-
-          // If online and no cached results, fetch from server
-          return await get().fetchFromServer({ 
-            searchTerm: keyword, 
-            page: 1, 
-            pageSize: 50 
-          });
+          const results = await CacheManager.searchTransactionsOffline(keyword);
+          
+          console.log(`✅ Found ${results.length} matching transactions`);
+          return results;
 
         } catch (error) {
           console.error('Error searching transactions:', error);
@@ -570,17 +355,11 @@ export const useTransactionStore = create(
       },
 
       /**
-       * Refresh invoices table (page 1)
+       * Refresh invoices (reload from PouchDB)
        */
       refreshInvoices: async () => {
-        const state = get();
-        
-        // Clear cache and fetch fresh
-        if (navigator.onLine) {
-          await state.syncWithServer();
-        }
-        
-        await state.fetchInvoices({
+        console.log('🔄 Refreshing invoices from PouchDB...');
+        await get().fetchInvoices({
           searchTerm: '',
           page: 1,
           pageSize: 25
@@ -588,15 +367,38 @@ export const useTransactionStore = create(
       },
 
       /**
-       * Handle online/offline status changes
+       * Get transaction statistics
        */
-      setOnlineStatus: (isOnline) => {
-        set({ isOnline });
-        
-        if (isOnline) {
-          // When coming back online, sync with server
-          const state = get();
-          setTimeout(() => state.syncWithServer(), 1000);
+      getTransactionStats: async () => {
+        try {
+          const stats = await CacheManager.getCachedTransactionStats();
+          return stats || {
+            totalSales: 0,
+            totalRevenue: 0,
+            totalReturns: 0,
+            totalReturnValue: 0,
+            averageOrderValue: 0
+          };
+        } catch (error) {
+          console.error('Error getting transaction stats:', error);
+          return {
+            totalSales: 0,
+            totalRevenue: 0,
+            totalReturns: 0,
+            totalReturnValue: 0,
+            averageOrderValue: 0
+          };
+        }
+      },
+
+      /**
+       * Update transaction statistics
+       */
+      updateTransactionStats: async (stats) => {
+        try {
+          await CacheManager.cacheTransactionStats(stats);
+        } catch (error) {
+          console.error('Error updating transaction stats:', error);
         }
       },
 
@@ -613,19 +415,104 @@ export const useTransactionStore = create(
       },
 
       /**
-       * Clear all cache
+       * Clear all cache and reset store
        */
       clearCache: async () => {
         try {
+          console.log('🗑️ Clearing all transaction cache...');
+          
           await CacheManager.clearAllCache();
+          
           set({
             invoices: [],
             totalInvoices: 0,
             lastFetchTimestamp: null,
-            isInitialized: false
+            isInitialized: false,
+            error: null
           });
+
+          console.log('✅ Transaction cache cleared successfully');
+
         } catch (error) {
           console.error('Error clearing cache:', error);
+          set({ error: 'Failed to clear cache' });
+        }
+      },
+
+      /**
+       * Import bulk invoices (for data migration)
+       */
+      importBulkInvoices: async (invoices) => {
+        if (!Array.isArray(invoices) || invoices.length === 0) {
+          throw new Error('Invalid invoices data for bulk import');
+        }
+
+        try {
+          console.log(`📥 Importing ${invoices.length} invoices...`);
+          set({ isLoading: true });
+
+          // Process invoices in batches to avoid overwhelming the system
+          const batchSize = 50;
+          let imported = 0;
+
+          for (let i = 0; i < invoices.length; i += batchSize) {
+            const batch = invoices.slice(i, i + batchSize);
+            
+            // Process each invoice in the batch
+            for (const invoice of batch) {
+              const invoiceData = {
+                _id: invoice._id || `INV-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                type: 'SALE',
+                ...invoice,
+                createdAt: invoice.createdAt || new Date().toISOString(),
+                updatedAt: new Date().toISOString(),
+                status: invoice.status || 'completed'
+              };
+
+              await CacheManager.addInvoiceToCache(invoiceData);
+              imported++;
+            }
+
+            // Update progress
+            console.log(`📥 Imported ${imported}/${invoices.length} invoices...`);
+          }
+
+          // Refresh the UI with the new data
+          await get().refreshInvoices();
+
+          set({ isLoading: false });
+          console.log(`✅ Successfully imported ${imported} invoices`);
+
+          return { success: true, imported };
+
+        } catch (error) {
+          console.error('❌ Error importing bulk invoices:', error);
+          set({ 
+            isLoading: false,
+            error: 'Failed to import invoices'
+          });
+          throw error;
+        }
+      },
+
+      /**
+       * Export all invoices (for backup)
+       */
+      exportAllInvoices: async () => {
+        try {
+          console.log('📤 Exporting all invoices...');
+          
+          const allInvoices = await CacheManager.getCachedInvoices({
+            page: 1,
+            pageSize: 10000 // Get all invoices
+          });
+
+          console.log(`✅ Exported ${allInvoices.invoices.length} invoices`);
+          return allInvoices.invoices;
+
+        } catch (error) {
+          console.error('❌ Error exporting invoices:', error);
+          throw error;
         }
       }
     }),
@@ -635,20 +522,8 @@ export const useTransactionStore = create(
       partialize: (state) => ({
         // Only persist minimal UI state, let PouchDB handle the heavy caching
         lastFetchTimestamp: state.lastFetchTimestamp,
-        isInitialized: state.isInitialized,
-        isOnline: state.isOnline
+        isInitialized: state.isInitialized
       })
     }
   )
 );
-
-// Listen for online/offline events
-if (typeof window !== 'undefined') {
-  window.addEventListener('online', () => {
-    useTransactionStore.getState().setOnlineStatus(true);
-  });
-  
-  window.addEventListener('offline', () => {
-    useTransactionStore.getState().setOnlineStatus(false);
-  });
-}

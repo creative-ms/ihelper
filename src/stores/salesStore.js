@@ -1,6 +1,5 @@
-// salesStore.js - Optimized version with cache integration
+// salesStore.js - PouchDB Only Version (No CouchDB Sync)
 import { create } from 'zustand';
-import axios from 'axios';
 import { useProductStore } from './productStore.js';
 import { useInventoryStore } from './inventoryStore.js';
 import { useCartStore } from './cartStore.js';
@@ -15,17 +14,8 @@ import { useSettingsStore } from '../stores/settingsStore';
 // --- Performance Configuration ---
 const PERFORMANCE_CONFIG = {
   BATCH_SIZE: 50,
-  CONCURRENT_REQUESTS: 3,
-  CACHE_TTL: 5 * 60 * 1000, // 5 minutes
   DEBOUNCE_DELAY: 300,
 };
-
-// --- Database Configuration ---
-const SALES_DB_URL = 'http://localhost:5984/sales';
-const PRODUCTS_DB_URL = 'http://localhost:5984/products';
-const CUSTOMERS_DB_URL = 'http://localhost:5984/customers';
-const TRANSACTIONS_DB_URL = 'http://localhost:5984/transactions';
-const DB_AUTH = { auth: { username: 'admin', password: 'mynewsecretpassword' } };
 
 // --- Performance Monitoring ---
 class SalesPerformanceMonitor {
@@ -49,7 +39,7 @@ class SalesPerformanceMonitor {
 
 const perfMonitor = new SalesPerformanceMonitor();
 
-// --- Optimized Helper Functions ---
+// --- Helper Functions ---
 const calculateItemCogs = (item) => {
   const purchasePrice = item.sourceBatchInfo?.purchasePrice || 0;
   if (purchasePrice === 0) return 0;
@@ -80,141 +70,73 @@ const getRoleDisplay = (role) => {
   return roleMap[(role || '').toLowerCase()] || role || 'User';
 };
 
-// --- Optimized Batch Processing ---
-const batchApiCalls = async (requests, concurrency = PERFORMANCE_CONFIG.CONCURRENT_REQUESTS) => {
-  const results = [];
-  
-  for (let i = 0; i < requests.length; i += concurrency) {
-    const batch = requests.slice(i, i + concurrency);
-    try {
-      const batchResults = await Promise.all(batch);
-      results.push(...batchResults);
-    } catch (error) {
-      results.push(...new Array(batch.length).fill(null));
-    }
-  }
-  
-  return results;
-};
-
-const batchUpdateProducts = async (productUpdates) => {
-  if (!productUpdates.length) return [];
-  
-  perfMonitor.start('batchUpdateProducts');
-  
-  const batches = [];
-  for (let i = 0; i < productUpdates.length; i += PERFORMANCE_CONFIG.BATCH_SIZE) {
-    batches.push(productUpdates.slice(i, i + PERFORMANCE_CONFIG.BATCH_SIZE));
-  }
-  
-  const results = [];
-  for (const batch of batches) {
-    const updatePromises = batch.map(async (update) => {
-      try {
-        const response = await axios.put(`${PRODUCTS_DB_URL}/${update._id}`, update, DB_AUTH);
-        return { success: true, productId: update._id, response };
-      } catch (error) {
-        return { success: false, productId: update._id, error };
-      }
-    });
-    
-    const batchResults = await Promise.allSettled(updatePromises);
-    results.push(...batchResults);
-  }
-  
-  perfMonitor.end('batchUpdateProducts');
-  return results;
-};
-
-// --- Optimized Inventory Updates ---
-const prepareInventoryUpdates = async (items) => {
-  perfMonitor.start('prepareInventoryUpdates');
+// --- Local Inventory Updates (PouchDB Only) ---
+const updateLocalInventory = async (items) => {
+  perfMonitor.start('updateLocalInventory');
   
   const nonManualItems = items.filter(item => !item.isManual);
   if (nonManualItems.length === 0) {
-    perfMonitor.end('prepareInventoryUpdates');
-    return { productUpdates: [], auditEvents: [] };
+    perfMonitor.end('updateLocalInventory');
+    return { success: true, auditEvents: [] };
   }
   
-  const productIds = [...new Set(nonManualItems.map(item => item._id))];
-  const productRequests = productIds.map(id => 
-    axios.get(`${PRODUCTS_DB_URL}/${id}`, DB_AUTH)
-  );
-  
-  let products = [];
-  try {
-    const productResponses = await batchApiCalls(productRequests);
-    products = productResponses.filter(response => response).map(response => response.data);
-  } catch (error) {
-    perfMonitor.end('prepareInventoryUpdates');
-    return { productUpdates: [], auditEvents: [] };
-  }
-  
-  const productUpdates = [];
   const auditEvents = [];
-  
-  for (const item of nonManualItems) {
-    const product = products.find(p => p._id === item._id);
-    if (!product || !product.batches) continue;
-    
-    const batch = product.batches.find(b => b.id === item.sourceBatchInfo?.id);
-    if (!batch) continue;
-    
-    const factor = getUnitConversionFactor(product, item.sellingUnit);
-    batch.quantity = Math.max(0, batch.quantity - (item.quantity * factor));
-    
-    productUpdates.push(product);
-    
-    auditEvents.push({
-      eventType: 'SALE',
-      productId: item._id,
-      productName: item.name,
-      details: {
-        quantity: item.quantity,
-        sellingUnit: item.sellingUnit,
-        basePrice: item.sellingPrice || 0,
-        itemDiscount: {
-          rate: (item.discountRate || 0) + (item.extraDiscount || 0),
-          amount: ((item.sellingPrice || 0) * item.quantity) * (((item.discountRate || 0) + (item.extraDiscount || 0)) / 100)
-        },
-        taxes: {
-          rate: isNaN(parseFloat(item.taxRate)) ? 0 : parseFloat(item.taxRate),
-          amount: (((item.sellingPrice || 0) * item.quantity - 
-                   (((item.sellingPrice || 0) * item.quantity) * (((item.discountRate || 0) + (item.extraDiscount || 0)) / 100))) * 
-                   ((isNaN(parseFloat(item.taxRate)) ? 0 : parseFloat(item.taxRate)) / 100))
-        },
-        costOfGoodsSold: calculateItemCogs(item) * item.quantity
-      }
-    });
-  }
-  
-  perfMonitor.end('prepareInventoryUpdates');
-  return { productUpdates, auditEvents };
-};
-
-// --- Optimized Meilisearch Sync ---
-const syncInvoiceToMeili = async (saleRecord, saleId) => {
-  if (!window.electronAPI?.sync) return { success: false };
+  const productStore = useProductStore.getState();
   
   try {
-    return await window.electronAPI.sync({
-      indexName: 'invoices',
-      documents: [{
-        id: saleId,
-        shortId: saleId.slice(-6),
-        customerName: saleRecord.customerName,
-        total: saleRecord.total,
-        createdAt: new Date(saleRecord.createdAt).getTime()
-      }]
-    });
+    for (const item of nonManualItems) {
+      // Get product from local store
+      const product = await productStore.getProductById(item._id);
+      if (!product || !product.batches) continue;
+      
+      const batch = product.batches.find(b => b.id === item.sourceBatchInfo?.id);
+      if (!batch) continue;
+      
+      const factor = getUnitConversionFactor(product, item.sellingUnit);
+      const newQuantity = Math.max(0, batch.quantity - (item.quantity * factor));
+      
+      // Update batch quantity
+      batch.quantity = newQuantity;
+      
+      // Update product in local store
+      await productStore.updateProduct(product);
+      
+      auditEvents.push({
+        eventType: 'SALE',
+        productId: item._id,
+        productName: item.name,
+        details: {
+          quantity: item.quantity,
+          sellingUnit: item.sellingUnit,
+          basePrice: item.sellingPrice || 0,
+          itemDiscount: {
+            rate: (item.discountRate || 0) + (item.extraDiscount || 0),
+            amount: ((item.sellingPrice || 0) * item.quantity) * (((item.discountRate || 0) + (item.extraDiscount || 0)) / 100)
+          },
+          taxes: {
+            rate: isNaN(parseFloat(item.taxRate)) ? 0 : parseFloat(item.taxRate),
+            amount: (((item.sellingPrice || 0) * item.quantity - 
+                     (((item.sellingPrice || 0) * item.quantity) * (((item.discountRate || 0) + (item.extraDiscount || 0)) / 100))) * 
+                     ((isNaN(parseFloat(item.taxRate)) ? 0 : parseFloat(item.taxRate)) / 100))
+          },
+          costOfGoodsSold: calculateItemCogs(item) * item.quantity
+        }
+      });
+    }
+    
+    perfMonitor.end('updateLocalInventory');
+    return { success: true, auditEvents };
+    
   } catch (error) {
-    return { success: false, error: error.message };
+    console.error('Error updating local inventory:', error);
+    perfMonitor.end('updateLocalInventory');
+    return { success: false, auditEvents: [] };
   }
 };
 
 // --- Store Refresh Helper ---
 const refreshStores = () => {
-  const { posViewStyle } = useSettingsStore.getState(); // ✅ get the current POS view
+  const { posViewStyle } = useSettingsStore.getState();
 
   const refresh = () => {
     const productStore = useProductStore.getState();
@@ -224,13 +146,13 @@ const refreshStores = () => {
 
     if (productStore.backgroundSync) productStore.backgroundSync();
 
-    // ✅ Skip inventory refresh in minimal view
+    // Skip inventory refresh in minimal view
     if (posViewStyle !== 'minimal' && inventoryStore.fetchInventory) {
       inventoryStore.fetchInventory();
     }
 
     if (customerStore.fetchCustomers) customerStore.fetchCustomers();
-    if (transactionStore.fetchInvoices) transactionStore.fetchInvoices();
+    if (transactionStore.refreshInvoices) transactionStore.refreshInvoices();
   };
 
   if (window.requestIdleCallback) {
@@ -238,6 +160,13 @@ const refreshStores = () => {
   } else {
     setTimeout(refresh, 100);
   }
+};
+
+// --- Generate Sale ID ---
+const generateSaleId = () => {
+  const timestamp = Date.now();
+  const random = Math.random().toString(36).substr(2, 9);
+  return `sale_${timestamp}_${random}`;
 };
 
 // --- Zustand Store ---
@@ -250,7 +179,7 @@ export const useSalesStore = create((set, get) => ({
   isInitialized: false,
 
   // =================================================================
-  //  CACHE-INTEGRATED INITIALIZATION
+  //  CACHE-ONLY INITIALIZATION
   // =================================================================
 
   initializeFromCache: async () => {
@@ -259,69 +188,26 @@ export const useSalesStore = create((set, get) => ({
       try {
         const cachedSales = await CacheManager.getCachedSales({ limit: 100 });
         
-        if (cachedSales.length > 0) {
-          set({
-            sales: cachedSales,
-            isInitialized: true,
-            lastFetchTime: new Date()
-          });
-        } else {
-          set({ isInitialized: true });
-        }
+        set({
+          sales: cachedSales,
+          isInitialized: true,
+          lastFetchTime: new Date()
+        });
 
-        // Check if cache is stale and needs refresh
-        const isStale = await CacheManager.isCacheStale(1); // 1 hour
-        
-        if (isStale && navigator.onLine) {
-          setTimeout(() => {
-            state.syncWithServer();
-          }, 100);
-        }
+        console.log(`✅ Initialized with ${cachedSales.length} cached sales`);
       } catch (error) {
-        set({ isInitialized: true });
+        console.error('Error initializing from cache:', error);
+        set({ 
+          isInitialized: true,
+          sales: [],
+          error: 'Failed to load cached sales'
+        });
       }
     }
   },
 
   // =================================================================
-  //  SERVER SYNC WITH CACHE UPDATE
-  // =================================================================
-
-  syncWithServer: async () => {
-    if (!navigator.onLine) return;
-
-    try {
-      const response = await axios.get(
-        `${SALES_DB_URL}/_all_docs?include_docs=true`, 
-        DB_AUTH
-      );
-      
-      const allSaleDocuments = response.data.rows
-        .map(row => row.doc)
-        .filter(doc => doc && doc.type);
-      
-      // Update cache with fresh data
-      await CacheManager.cacheRecentSales(allSaleDocuments);
-      
-      // Update UI state
-      const sortedDocuments = allSaleDocuments.sort((a, b) => {
-        const dateA = new Date(b.returnedAt || b.createdAt);
-        const dateB = new Date(a.returnedAt || a.createdAt);
-        return dateA - dateB;
-      });
-      
-      set({ 
-        sales: sortedDocuments, 
-        lastFetchTime: new Date()
-      });
-      
-    } catch (error) {
-      // Silently fail and continue with cached data
-    }
-  },
-
-  // =================================================================
-  //  OPTIMIZED FETCH SALES (CACHE-FIRST)
+  //  FETCH SALES (CACHE-ONLY)
   // =================================================================
 
   fetchSales: async () => {
@@ -329,43 +215,21 @@ export const useSalesStore = create((set, get) => ({
     set({ isLoading: true, error: null });
     
     try {
-      // Try cache first
       const cachedSales = await CacheManager.getCachedSales({ limit: 500 });
       
-      if (cachedSales.length > 0) {
-        set({ 
-          sales: cachedSales, 
-          isLoading: false,
-          lastFetchTime: new Date()
-        });
-        
-        // Background sync if cache is stale
-        const isStale = await CacheManager.isCacheStale(1);
-        if (isStale && navigator.onLine) {
-          setTimeout(() => get().syncWithServer(), 100);
-        }
-        
-        perfMonitor.end('fetchSales');
-        return;
-      }
-
-      // Fallback to server if cache is empty
-      if (navigator.onLine) {
-        await get().syncWithServer();
-        set({ isLoading: false });
-      } else {
-        set({ 
-          isLoading: false, 
-          error: "No cached data available offline",
-          sales: [] 
-        });
-      }
+      set({ 
+        sales: cachedSales, 
+        isLoading: false,
+        lastFetchTime: new Date()
+      });
       
+      console.log(`✅ Loaded ${cachedSales.length} sales from cache`);
       perfMonitor.end('fetchSales');
     } catch (error) {
+      console.error('Error fetching sales:', error);
       set({ 
         isLoading: false, 
-        error: "Failed to fetch sales",
+        error: "Failed to fetch sales from cache",
         sales: [] 
       });
       perfMonitor.end('fetchSales');
@@ -373,7 +237,7 @@ export const useSalesStore = create((set, get) => ({
   },
 
   // =================================================================
-  //  OPTIMIZED INVOICE SEARCH (CACHE-FIRST)
+  //  INVOICE SEARCH (CACHE-ONLY)
   // =================================================================
 
   findInvoiceById: async (invoiceId) => {
@@ -382,7 +246,7 @@ export const useSalesStore = create((set, get) => ({
     perfMonitor.start('findInvoiceById');
     
     try {
-      // Try cache first
+      // Try direct cache lookup first
       const cachedSale = await CacheManager.getCachedSaleById(invoiceId);
       if (cachedSale) {
         perfMonitor.end('findInvoiceById');
@@ -396,35 +260,17 @@ export const useSalesStore = create((set, get) => ({
         return searchResults[0];
       }
 
-      // Fallback to server if online
-      if (!navigator.onLine) {
-        perfMonitor.end('findInvoiceById');
-        return null;
-      }
-
-      const query = {
-        selector: { _id: { '$regex': `${invoiceId}$` } },
-        limit: 1
-      };
-      
-      const response = await axios.post(`${SALES_DB_URL}/_find`, query, DB_AUTH);
-      const result = response.data.docs.length > 0 ? response.data.docs[0] : null;
-      
-      // Cache the result
-      if (result) {
-        await CacheManager.addSaleToCache(result);
-      }
-      
       perfMonitor.end('findInvoiceById');
-      return result;
+      return null;
     } catch (error) {
+      console.error('Error finding invoice:', error);
       perfMonitor.end('findInvoiceById');
       return null;
     }
   },
 
   // =================================================================
-  //  OPTIMIZED ADD SALE WITH CACHE INTEGRATION
+  //  ADD SALE (LOCAL ONLY)
   // =================================================================
 
   addSale: async (saleData) => {
@@ -473,7 +319,11 @@ export const useSalesStore = create((set, get) => ({
         customerId = null;
       }
       
+      // Generate unique sale ID
+      const saleId = generateSaleId();
+      
       const saleRecordToSave = {
+        _id: saleId,
         items,
         customerName: finalCustomerName,
         customerId: customerId,
@@ -497,46 +347,20 @@ export const useSalesStore = create((set, get) => ({
         }
       };
       
-      // Parallel operations for better performance
-      const [saleResponse, inventoryUpdates] = await Promise.all([
-        axios.post(SALES_DB_URL, saleRecordToSave, DB_AUTH),
-        prepareInventoryUpdates(items)
-      ]);
+      // Update local inventory
+      const inventoryResult = await updateLocalInventory(items);
       
-      const saleId = saleResponse.data.id;
-      const parallelOperations = [];
-      
-      // Customer management
+      // Process customer balance if applicable
+      let updatedCustomer = null;
       if (customer && customer._id) {
-        parallelOperations.push(
-          useCustomerStore.getState().processSaleAndUpdateBalance(
-            customer._id,
-            finalSaleTotal,
-            amountPaid,
-            saleId,
-            settlePreviousBalance
-          )
+        const customerStore = useCustomerStore.getState();
+        updatedCustomer = await customerStore.processSaleAndUpdateBalance(
+          customer._id,
+          finalSaleTotal,
+          amountPaid,
+          saleId,
+          settlePreviousBalance
         );
-      }
-      
-      // Inventory updates
-      if (inventoryUpdates.productUpdates.length > 0) {
-        parallelOperations.push(batchUpdateProducts(inventoryUpdates.productUpdates));
-      }
-      
-      // Meilisearch sync
-      parallelOperations.push(syncInvoiceToMeili(saleRecordToSave, saleId));
-      
-      const [updatedCustomer, productUpdateResults, meiliSyncResult] = await Promise.all(parallelOperations);
-      
-      // Log audit events asynchronously
-      if (inventoryUpdates.auditEvents.length > 0) {
-        const auditStore = useAuditStore.getState();
-        inventoryUpdates.auditEvents.forEach(event => {
-          event.details.customerName = saleRecordToSave.customerName;
-          event.details.saleId = saleId;
-          auditStore.logEvent(event);
-        });
       }
       
       // Calculate change due
@@ -547,16 +371,24 @@ export const useSalesStore = create((set, get) => ({
       // Update final sale record
       const finalSaleRecord = {
         ...saleRecordToSave,
-        _id: saleId,
-        _rev: saleResponse.data.rev,
         changeDue,
         updatedCustomer
       };
       
-      await axios.put(`${SALES_DB_URL}/${saleId}`, finalSaleRecord, DB_AUTH);
-      
-      // Add to cache immediately
+      // Save to PouchDB cache
       await CacheManager.addSaleToCache(finalSaleRecord);
+      
+      // Log audit events
+      if (inventoryResult.auditEvents.length > 0 && inventoryResult.success) {
+        const auditStore = useAuditStore.getState();
+        inventoryResult.auditEvents.forEach(event => {
+          event.details.customerName = finalSaleRecord.customerName;
+          event.details.saleId = saleId;
+          if (auditStore.logEvent) {
+            auditStore.logEvent(event);
+          }
+        });
+      }
       
       // Update sales metrics cache
       await CacheManager.calculateMetricsFromCache();
@@ -567,17 +399,25 @@ export const useSalesStore = create((set, get) => ({
         await transactionStore.addNewInvoice(finalSaleRecord);
       }
       
+      // Update local state
+      const currentSales = get().sales;
+      set({
+        sales: [finalSaleRecord, ...currentSales],
+        isLoading: false
+      });
+      
       // Clear cart
       useCartStore.getState().clearCart();
       
-      // Refresh stores with background priority
+      // Refresh stores
       refreshStores();
       
-      set({ isLoading: false });
+      console.log(`✅ Sale ${saleId} processed successfully (local only)`);
       perfMonitor.end('addSale');
       return finalSaleRecord;
       
     } catch (error) {
+      console.error('Error processing sale:', error);
       set({ isLoading: false, error: 'Failed to process sale' });
       perfMonitor.end('addSale');
       return null;
@@ -585,7 +425,7 @@ export const useSalesStore = create((set, get) => ({
   },
 
   // =================================================================
-  //  OPTIMIZED PROCESS RETURN WITH CACHE INTEGRATION
+  //  PROCESS RETURN (LOCAL ONLY)
   // =================================================================
 
   processReturn: async (originalInvoice, returnedItems, refundChoice) => {
@@ -601,19 +441,12 @@ export const useSalesStore = create((set, get) => ({
         return sum + (item.sellingPrice * item.returnQuantity) * totalToSubtotalRatio;
       }, 0);
       
+      // Handle customer balance locally
       const customerStore = useCustomerStore.getState();
       let customer = null;
       
       if (originalInvoice.customerId) {
-        try {
-          const customerResponse = await axios.get(
-            `${CUSTOMERS_DB_URL}/${originalInvoice.customerId}`, 
-            DB_AUTH
-          );
-          customer = customerResponse.data;
-        } catch (error) {
-          // Customer not found
-        }
+        customer = await customerStore.getCustomerById(originalInvoice.customerId);
       }
       
       const currentBalance = customer?.balance || 0;
@@ -628,7 +461,11 @@ export const useSalesStore = create((set, get) => ({
         creditNoteAmount = totalReturnValue - amountToSettle;
       }
       
+      // Generate return ID
+      const returnId = `return_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+      
       const returnRecord = {
+        _id: returnId,
         type: 'RETURN',
         originalInvoiceId: originalInvoice._id,
         returnedAt: new Date().toISOString(),
@@ -644,18 +481,10 @@ export const useSalesStore = create((set, get) => ({
         customerId: originalInvoice.customerId
       };
       
-      // Save return record
-      const returnResponse = await axios.post(SALES_DB_URL, returnRecord, DB_AUTH);
+      // Save return record to cache
+      await CacheManager.addSaleToCache(returnRecord);
       
-      // Add return to cache
-      const finalReturnRecord = {
-        ...returnRecord,
-        _id: returnResponse.data.id,
-        _rev: returnResponse.data.rev
-      };
-      await CacheManager.addSaleToCache(finalReturnRecord);
-      
-      // Update customer balance
+      // Update customer balance locally
       if (customer) {
         await customerStore._updateCustomerBalance(
           customer._id,
@@ -663,7 +492,7 @@ export const useSalesStore = create((set, get) => ({
         );
       }
       
-      // Process inventory returns in batches
+      // Process inventory returns locally (batch processing)
       const productStore = useProductStore.getState();
       const nonManualReturns = returnedItems.filter(item => !item.isManual);
       
@@ -672,8 +501,8 @@ export const useSalesStore = create((set, get) => ({
         
         await Promise.all(batch.map(async (item) => {
           try {
-            const productResponse = await axios.get(`${PRODUCTS_DB_URL}/${item._id}`, DB_AUTH);
-            const product = productResponse.data;
+            const product = await productStore.getProductById(item._id);
+            if (!product) return;
             
             if (!product.batches) product.batches = [];
             
@@ -699,56 +528,68 @@ export const useSalesStore = create((set, get) => ({
             await productStore.updateProduct(product);
             
             // Log audit event
-            useAuditStore.getState().logEvent({
-              eventType: 'RETURN_CUSTOMER',
-              productId: item._id,
-              productName: item.name,
-              details: {
-                quantity: item.returnQuantity,
-                sellingUnit: item.sellingUnit,
-                customerName: returnRecord.customerName,
-                saleId: returnRecord.originalInvoiceId
-              }
-            });
+            const auditStore = useAuditStore.getState();
+            if (auditStore.logEvent) {
+              auditStore.logEvent({
+                eventType: 'RETURN_CUSTOMER',
+                productId: item._id,
+                productName: item.name,
+                details: {
+                  quantity: item.returnQuantity,
+                  sellingUnit: item.sellingUnit,
+                  customerName: returnRecord.customerName,
+                  saleId: returnRecord.originalInvoiceId
+                }
+              });
+            }
           } catch (error) {
-            // Skip failed product updates
+            console.error('Error processing return for item:', item._id, error);
           }
         }));
       }
       
-      // Update transaction store if available
+      // Update transaction store
       const transactionStore = useTransactionStore.getState();
       if (transactionStore.updateInvoiceReturns) {
-        await transactionStore.updateInvoiceReturns(originalInvoice._id, finalReturnRecord);
+        await transactionStore.updateInvoiceReturns(originalInvoice._id, returnRecord);
       }
       
       // Update sales metrics cache
       await CacheManager.calculateMetricsFromCache();
       
-      // Refresh related stores
+      // Update local state
+      const currentSales = get().sales;
+      set({
+        sales: [returnRecord, ...currentSales],
+        isLoading: false
+      });
+      
+      // Refresh stores
       refreshStores();
       
+      console.log(`✅ Return ${returnId} processed successfully (local only)`);
       perfMonitor.end('processReturn');
+      return returnRecord;
+      
     } catch (error) {
+      console.error('Error processing return:', error);
+      set({ isLoading: false, error: 'Failed to process return' });
       perfMonitor.end('processReturn');
-    } finally {
-      set({ isLoading: false });
+      return null;
     }
   },
 
   // =================================================================
-  //  CACHE-ENHANCED UTILITY METHODS
+  //  UTILITY METHODS (CACHE-ONLY)
   // =================================================================
 
   clearError: () => set({ error: null }),
   
   getSalesMetrics: async () => {
     try {
-      // Try to get metrics from cache first
-      const cachedMetrics = await CacheManager.getCachedSalesMetrics();
-      return cachedMetrics;
+      return await CacheManager.getCachedSalesMetrics();
     } catch (error) {
-      // Fallback to calculating from current state
+      console.error('Error getting sales metrics:', error);
       const { sales } = get();
       const today = new Date().toDateString();
       
@@ -770,20 +611,22 @@ export const useSalesStore = create((set, get) => ({
     }
   },
 
-  // Search sales (cache-first)
+  // Search sales (cache-only)
   searchSales: async (keyword) => {
     try {
       return await CacheManager.searchSalesOffline(keyword);
     } catch (error) {
+      console.error('Error searching sales:', error);
       return [];
     }
   },
 
-  // Get sale by ID (cache-first)
+  // Get sale by ID (cache-only)
   getSaleById: async (saleId) => {
     try {
       return await CacheManager.getCachedSaleById(saleId);
     } catch (error) {
+      console.error('Error getting sale by ID:', error);
       return null;
     }
   },
@@ -797,8 +640,10 @@ export const useSalesStore = create((set, get) => ({
         lastFetchTime: null,
         isInitialized: false
       });
+      console.log('✅ Sales cache cleared');
       return true;
     } catch (error) {
+      console.error('Error clearing cache:', error);
       return false;
     }
   },
@@ -806,9 +651,38 @@ export const useSalesStore = create((set, get) => ({
   // Get cache health
   getCacheHealth: async () => {
     try {
-      return await CacheManager.healthCheck();
+      return await CacheManager.getSalesCacheHealth();
     } catch (error) {
+      console.error('Error getting cache health:', error);
       return { healthy: false, error: error.message };
+    }
+  },
+
+  // Refresh sales from cache
+  refreshSales: async () => {
+    await get().fetchSales();
+  },
+
+  // Export sales data
+  exportSales: async (filters = {}) => {
+    try {
+      const sales = await CacheManager.getCachedSales({
+        limit: 10000,
+        ...filters
+      });
+      
+      return sales.map(sale => ({
+        id: sale._id,
+        date: sale.createdAt,
+        customer: sale.customerName,
+        total: sale.total,
+        profit: sale.profit,
+        soldBy: sale.soldBy?.userName || 'Unknown',
+        type: sale.type
+      }));
+    } catch (error) {
+      console.error('Error exporting sales:', error);
+      return [];
     }
   }
 }));

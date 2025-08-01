@@ -1,11 +1,10 @@
 // ===================================
-// OPTIMIZED DASHBOARD STORE - POS-FRIENDLY VERSION
+// OPTIMIZED DASHBOARD STORE - POUCHDB ONLY VERSION
 // File: src/stores/dashboardStore.js
 // ===================================
 
 import { create } from 'zustand';
 import { persist, subscribeWithSelector } from 'zustand/middleware';
-import axios from 'axios';
 import {
   calculateStats,
   processChartData,
@@ -16,15 +15,15 @@ import {
 import EnhancedDashboardCache from './dashboard/DashboardWorkerManager';
 import CacheManager from '../utils/cache';
 
-// Database URLs and Auth
-const SALES_DB_URL = 'http://localhost:5984/sales';
-const PRODUCTS_DB_URL = 'http://localhost:5984/products';
-const CUSTOMERS_DB_URL = 'http://localhost:5984/customers';
-const SUPPLIERS_DB_URL = 'http://localhost:5984/suppliers';
-const PURCHASES_DB_URL = 'http://localhost:5984/purchases';
-const TRANSACTIONS_DB_URL = 'http://localhost:5984/transactions';
-
-const DB_AUTH = { auth: { username: 'admin', password: 'mynewsecretpassword' } };
+// Import PouchDB databases
+import {
+  salesDB,
+  productsDB,
+  customersDB,
+  suppliersDB,
+  purchasesDB,
+  transactionsDB
+} from '../utils/cache/databases';
 
 // 🔥 POS-FRIENDLY CACHE CONFIGURATION
 const CACHE_DURATION = 10 * 60 * 1000; // 10 minutes (longer for POS optimization)
@@ -126,38 +125,23 @@ const validateAllDocs = (allDocs) => {
   };
 };
 
-// Create axios instance
-const apiClient = axios.create({
-  timeout: 15000,
-  headers: {
-    'Accept': 'application/json',
-    'Content-Type': 'application/json',
-  },
-  withCredentials: true,
-});
-
-// Add interceptors
-apiClient.interceptors.request.use(
-  (config) => {
-    config.auth = DB_AUTH.auth;
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
-
-apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
-    if (error.code === 'ERR_NETWORK' || error.code === 'ECONNREFUSED') {
-      error.message = 'Cannot connect to CouchDB server. Please check if CouchDB is running on localhost:5984';
-    } else if (error.response?.status === 401) {
-      error.message = 'Authentication failed. Please check your CouchDB credentials.';
-    } else if (error.response?.status === 404) {
-      error.message = 'Database not found. Please check if the database exists in CouchDB.';
-    }
-    return Promise.reject(error);
+// 🔥 NEW: PouchDB data fetching functions
+const fetchFromPouchDB = async (database, limit = 1000) => {
+  try {
+    const result = await database.allDocs({
+      include_docs: true,
+      limit: limit,
+      descending: true
+    });
+    
+    return result.rows
+      .map(row => row.doc)
+      .filter(doc => doc && !doc._id.startsWith('_design'));
+  } catch (error) {
+    console.error(`Error fetching from PouchDB:`, error);
+    return [];
   }
-);
+};
 
 // 🔥 NEW: Smart background data refresh triggered by POS transactions
 const scheduleBackgroundRefresh = (reason = 'unknown') => {
@@ -196,34 +180,23 @@ const refreshDashboardDataInBackground = async () => {
   try {
     console.log('🔄 Starting background data refresh...');
     
-    // Fetch fresh data silently
-    const dataFetches = await Promise.allSettled([
-      apiClient.get(`${SALES_DB_URL}/_all_docs?include_docs=true&limit=1000`),
-      apiClient.get(`${PRODUCTS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-      apiClient.get(`${CUSTOMERS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-      apiClient.get(`${SUPPLIERS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-      apiClient.get(`${PURCHASES_DB_URL}/_all_docs?include_docs=true&limit=1000`),
-      apiClient.get(`${TRANSACTIONS_DB_URL}/_all_docs?include_docs=true&limit=1000`),
+    // Fetch fresh data from PouchDB
+    const [sales, products, customers, suppliers, purchases, transactions] = await Promise.all([
+      fetchFromPouchDB(salesDB, 1000),
+      fetchFromPouchDB(productsDB, 500),
+      fetchFromPouchDB(customersDB, 500),
+      fetchFromPouchDB(suppliersDB, 500),
+      fetchFromPouchDB(purchasesDB, 1000),
+      fetchFromPouchDB(transactionsDB, 1000)
     ]);
 
-    const [salesRes, productsRes, customersRes, suppliersRes, purchasesRes, transactionsRes] = dataFetches;
-    
-    const extractData = (result, name) => {
-      if (result.status === 'fulfilled' && result.value?.data?.rows) {
-        return result.value.data.rows
-          .map(r => r.doc)
-          .filter(doc => doc && !doc._id.startsWith('_design'));
-      }
-      return [];
-    };
-
     const allDocs = {
-      sales: extractData(salesRes, 'Sales'),
-      products: extractData(productsRes, 'Products'),
-      customers: extractData(customersRes, 'Customers'),
-      suppliers: extractData(suppliersRes, 'Suppliers'),
-      purchases: extractData(purchasesRes, 'Purchases'),
-      transactions: extractData(transactionsRes, 'Transactions')
+      sales,
+      products,
+      customers,
+      suppliers,
+      purchases,
+      transactions
     };
 
     // Update cache silently
@@ -233,8 +206,8 @@ const refreshDashboardDataInBackground = async () => {
       persistentCache.timestamp = Date.now();
       
       // Track latest transaction IDs for smart invalidation
-      const latestSale = allDocs.sales?.[0];
-      const latestTransaction = allDocs.transactions?.[0];
+      const latestSale = sales?.[0];
+      const latestTransaction = transactions?.[0];
       
       if (latestSale) persistentCache.lastSaleId = latestSale._id;
       if (latestTransaction) persistentCache.lastTransactionId = latestTransaction._id;
@@ -288,7 +261,7 @@ export const useDashboardStore = create(
         isLoading: false,
         error: null,
         lastFetch: null,
-        connectionStatus: 'unknown',
+        connectionStatus: 'local', // Changed from 'unknown' to 'local'
         
         fetchStartTime: null,
         fetchDuration: null,
@@ -306,12 +279,12 @@ export const useDashboardStore = create(
 
         // 🔥 NEW: Lightweight initialization - no heavy operations
         initializeDashboard: async () => {
-          console.log('🚀 Initializing dashboard (POS-friendly mode)...');
+          console.log('🚀 Initializing dashboard (PouchDB-only mode)...');
           
           set({ 
             isInitialized: true,
             initializationError: null,
-            connectionStatus: 'unknown'
+            connectionStatus: 'local'
           });
 
           // Load from cache immediately if available
@@ -341,7 +314,7 @@ export const useDashboardStore = create(
           // Enhanced cache can stay alive for better performance
         },
 
-        // 🔥 OPTIMIZED: Smart cache-first data fetching
+        // 🔥 OPTIMIZED: Smart cache-first data fetching from PouchDB
         fetchDashboardData: async () => {
           const state = get();
           if (state.isLoading) {
@@ -358,7 +331,7 @@ export const useDashboardStore = create(
             set({ 
               cacheAge: Math.round(cacheAge / 1000),
               lastFetch: currentTime,
-              connectionStatus: 'connected'
+              connectionStatus: 'local'
             });
             get().processDataSilently(persistentCache.data);
             return;
@@ -373,60 +346,35 @@ export const useDashboardStore = create(
           });
 
           try {
-            // Quick connection test
-            const connectionTest = await apiClient.get('http://localhost:5984/', { timeout: 3000 });
-            if (!connectionTest.data.couchdb) {
-              throw new Error('CouchDB not responding properly');
-            }
-
-            console.log('🔄 Fetching fresh data...');
+            console.log('🔄 Fetching fresh data from PouchDB...');
             
-            // Fetch with optimized timeout for POS performance
-            const fetchWithRetry = async (url, retries = 1) => {
-              for (let i = 0; i <= retries; i++) {
-                try {
-                  const response = await apiClient.get(url, { timeout: 8000 });
-                  return response;
-                } catch (error) {
-                  if (i === retries) throw error;
-                  await new Promise(resolve => setTimeout(resolve, 500));
-                }
-              }
-            };
-
-            // Fetch all data in parallel with reduced timeout
-            const dataFetches = await Promise.allSettled([
-              fetchWithRetry(`${SALES_DB_URL}/_all_docs?include_docs=true&limit=1000`),
-              fetchWithRetry(`${PRODUCTS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-              fetchWithRetry(`${CUSTOMERS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-              fetchWithRetry(`${SUPPLIERS_DB_URL}/_all_docs?include_docs=true&limit=500`),
-              fetchWithRetry(`${PURCHASES_DB_URL}/_all_docs?include_docs=true&limit=1000`),
-              fetchWithRetry(`${TRANSACTIONS_DB_URL}/_all_docs?include_docs=true&limit=1000`),
+            // Fetch all data from PouchDB in parallel
+            const [sales, products, customers, suppliers, purchases, transactions] = await Promise.all([
+              fetchFromPouchDB(salesDB, 1000),
+              fetchFromPouchDB(productsDB, 500),
+              fetchFromPouchDB(customersDB, 500),
+              fetchFromPouchDB(suppliersDB, 500),
+              fetchFromPouchDB(purchasesDB, 1000),
+              fetchFromPouchDB(transactionsDB, 1000)
             ]);
 
-            // Process responses
-            const [salesRes, productsRes, customersRes, suppliersRes, purchasesRes, transactionsRes] = dataFetches;
-            
-            const extractData = (result, name) => {
-              if (result.status === 'fulfilled' && result.value?.data?.rows) {
-                const data = result.value.data.rows
-                  .map(r => r.doc)
-                  .filter(doc => doc && !doc._id.startsWith('_design'));
-                return data;
-              } else {
-                console.warn(`⚠️ ${name}: Failed to fetch`);
-                return [];
-              }
+            const allDocs = {
+              sales,
+              products,
+              customers,
+              suppliers,
+              purchases,
+              transactions
             };
 
-            const allDocs = {
-              sales: extractData(salesRes, 'Sales'),
-              products: extractData(productsRes, 'Products'),
-              customers: extractData(customersRes, 'Customers'),
-              suppliers: extractData(suppliersRes, 'Suppliers'),
-              purchases: extractData(purchasesRes, 'Purchases'),
-              transactions: extractData(transactionsRes, 'Transactions')
-            };
+            console.log(`📊 Fetched data counts:`, {
+              sales: sales.length,
+              products: products.length,
+              customers: customers.length,
+              suppliers: suppliers.length,
+              purchases: purchases.length,
+              transactions: transactions.length
+            });
 
             // Validate and cache data
             const validation = validateAllDocs(allDocs);
@@ -435,8 +383,8 @@ export const useDashboardStore = create(
               persistentCache.timestamp = currentTime;
               
               // Track latest IDs for smart invalidation
-              const latestSale = allDocs.sales?.[0];
-              const latestTransaction = allDocs.transactions?.[0];
+              const latestSale = sales?.[0];
+              const latestTransaction = transactions?.[0];
               
               if (latestSale) persistentCache.lastSaleId = latestSale._id;
               if (latestTransaction) persistentCache.lastTransactionId = latestTransaction._id;
@@ -454,13 +402,13 @@ export const useDashboardStore = create(
             }
 
           } catch (error) {
-            console.error("❌ Error fetching dashboard data:", error);
+            console.error("❌ Error fetching dashboard data from PouchDB:", error);
             set({ 
               isLoading: false, 
               isLoadingProducts: false,
               error: error.message || 'Failed to fetch dashboard data',
               productError: error.message || 'Failed to fetch product data',
-              connectionStatus: 'disconnected'
+              connectionStatus: 'error'
             });
           }
         },
@@ -503,7 +451,7 @@ export const useDashboardStore = create(
               productError: null,
               lastFetch: Date.now(),
               fetchDuration: processingTime,
-              connectionStatus: 'connected',
+              connectionStatus: 'local',
               cacheAge: persistentCache.timestamp ? Math.round((Date.now() - persistentCache.timestamp) / 1000) : null
             });
 
@@ -548,7 +496,7 @@ export const useDashboardStore = create(
                 productError: null,
                 lastFetch: Date.now(),
                 fetchDuration: processingTime,
-                connectionStatus: 'connected',
+                connectionStatus: 'local',
                 cacheAge: persistentCache.timestamp ? Math.round((Date.now() - persistentCache.timestamp) / 1000) : null
               });
 
@@ -645,9 +593,10 @@ export const useDashboardStore = create(
               },
               enhanced: dashboardCache,
               backgroundProcessing: get().isBackgroundProcessing,
-              isDashboardActive: true, // Always consider active in POS-friendly mode
+              isDashboardActive: true,
               enhancedCacheAvailable: !!enhancedCache,
-              lastBackgroundRefresh: get().lastBackgroundRefresh
+              lastBackgroundRefresh: get().lastBackgroundRefresh,
+              storageMode: 'PouchDB-only'
             };
           } catch (error) {
             console.error('Error getting cache status:', error);
@@ -656,7 +605,8 @@ export const useDashboardStore = create(
               enhanced: { healthy: false, error: error.message },
               backgroundProcessing: false,
               isDashboardActive: true,
-              enhancedCacheAvailable: false
+              enhancedCacheAvailable: false,
+              storageMode: 'PouchDB-only'
             };
           }
         },

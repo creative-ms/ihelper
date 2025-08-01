@@ -1,27 +1,21 @@
-// src/stores/inventory/productOperations.js - Cache-Optimized Product CRUD Operations
-import axios from 'axios';
+// src/stores/inventory/productOperations.js - PouchDB-Only Product CRUD Operations
 import CacheManager from '../../utils/cache/index';
-import { InventoryWorkerManager, PerformanceMonitor, withRetry, processBatches, PERFORMANCE_CONFIG } from './performanceManager';
+import { InventoryWorkerManager, PerformanceMonitor, processBatches, PERFORMANCE_CONFIG } from './performanceManager';
 import { validateProduct, validateBatch, generateProductId, generateBatchId } from '../validationService';
-
-// --- Database Configuration ---
-const DB_URL = 'http://localhost:5984/products';
-const DB_AUTH = { auth: { username: 'admin', password: 'mynewsecretpassword' } };
 
 // --- Initialize Performance Tools ---
 const workerManager = new InventoryWorkerManager();
 const perfMonitor = new PerformanceMonitor();
 
 // =================================================================
-//  🚀 CACHE-INTEGRATED PRODUCT OPERATIONS CLASS
+//  🚀 POUCHDB-ONLY PRODUCT OPERATIONS CLASS
 // =================================================================
 
 export class ProductOperations {
   constructor(getInventoryState) {
     this.getState = getInventoryState;
     this.pendingOperations = new Map();
-    this.operationQueue = [];
-    this.isProcessingQueue = false;
+    this.isProcessing = false;
   }
 
   // =================================================================
@@ -70,7 +64,7 @@ export class ProductOperations {
         products: [newProduct] 
       });
 
-      // Update cache immediately
+      // Cache to PouchDB
       await CacheManager.cacheProduct(processedProduct);
       
       // Cache batches if any
@@ -81,14 +75,6 @@ export class ProductOperations {
       // Update inventory state
       const state = this.getState();
       await state.addProductToInventory(processedProduct);
-
-      // Background database sync
-      this.queueOperation({
-        type: 'CREATE',
-        productId: processedProduct._id,
-        product: processedProduct,
-        operationId
-      });
 
       console.log(`✅ Product created: ${processedProduct.name} (${processedProduct._id})`);
       perfMonitor.end(`createProduct_${operationId}`);
@@ -147,21 +133,13 @@ export class ProductOperations {
         products: [updatedProduct] 
       });
 
-      // Update cache
+      // Update PouchDB cache
       await CacheManager.cacheProduct(processedProduct);
       await CacheManager.cacheBatches(processedProduct._id, processedProduct.batches);
 
       // Update inventory state
       const state = this.getState();
       await state.updateProductInInventory(processedProduct);
-
-      // Queue remote sync
-      this.queueOperation({
-        type: 'UPDATE',
-        productId: processedProduct._id,
-        product: processedProduct,
-        operationId
-      });
 
       console.log(`✅ Batch added to ${processedProduct.name}: ${newBatch.batchNumber}`);
       perfMonitor.end(`createBatch_${operationId}`);
@@ -234,7 +212,7 @@ export class ProductOperations {
         products: [updatedProduct] 
       });
 
-      // Update cache
+      // Update PouchDB cache
       await CacheManager.cacheProduct(processedProduct);
       if (processedProduct.batches?.length > 0) {
         await CacheManager.cacheBatches(processedProduct._id, processedProduct.batches);
@@ -243,14 +221,6 @@ export class ProductOperations {
       // Update inventory state
       const state = this.getState();
       await state.updateProductInInventory(processedProduct);
-
-      // Queue remote sync
-      this.queueOperation({
-        type: 'UPDATE',
-        productId: processedProduct._id,
-        product: processedProduct,
-        operationId
-      });
 
       console.log(`✅ Product updated: ${processedProduct.name}`);
       perfMonitor.end(`updateProduct_${operationId}`);
@@ -316,21 +286,13 @@ export class ProductOperations {
         products: [updatedProduct] 
       });
 
-      // Update cache
+      // Update PouchDB cache
       await CacheManager.cacheProduct(processedProduct);
       await CacheManager.cacheBatches(processedProduct._id, processedProduct.batches);
 
       // Update inventory state
       const state = this.getState();
       await state.updateProductInInventory(processedProduct);
-
-      // Queue remote sync
-      this.queueOperation({
-        type: 'UPDATE',
-        productId: processedProduct._id,
-        product: processedProduct,
-        operationId
-      });
 
       console.log(`✅ Batch updated: ${batchId}`);
       perfMonitor.end(`updateBatch_${operationId}`);
@@ -365,20 +327,12 @@ export class ProductOperations {
         throw new Error('Product not found');
       }
 
-      // Remove from cache
+      // Remove from PouchDB cache
       await CacheManager.removeCachedProduct(productId);
 
       // Remove from inventory state
       const state = this.getState();
       await state.removeProductFromInventory(productId);
-
-      // Queue remote deletion
-      this.queueOperation({
-        type: 'DELETE',
-        productId: productId,
-        product: currentProduct,
-        operationId
-      });
 
       console.log(`✅ Product deleted: ${currentProduct.name}`);
       perfMonitor.end(`deleteProduct_${operationId}`);
@@ -430,21 +384,13 @@ export class ProductOperations {
         products: [updatedProduct] 
       });
 
-      // Update cache
+      // Update PouchDB cache
       await CacheManager.cacheProduct(processedProduct);
       await CacheManager.cacheBatches(processedProduct._id, processedProduct.batches);
 
       // Update inventory state
       const state = this.getState();
       await state.updateProductInInventory(processedProduct);
-
-      // Queue remote sync
-      this.queueOperation({
-        type: 'UPDATE',
-        productId: processedProduct._id,
-        product: processedProduct,
-        operationId
-      });
 
       console.log(`✅ Batch deleted: ${batchId}`);
       perfMonitor.end(`deleteBatch_${operationId}`);
@@ -459,7 +405,7 @@ export class ProductOperations {
   }
 
   // =================================================================
-  //  BULK OPERATIONS WITH CACHE OPTIMIZATION
+  //  BULK OPERATIONS - POUCHDB OPTIMIZED
   // =================================================================
 
   async bulkCreateProducts(productsData) {
@@ -489,6 +435,16 @@ export class ProductOperations {
             batches: productData.batches || []
           };
           
+          // Process batches if provided
+          if (newProduct.batches.length > 0) {
+            newProduct.batches = newProduct.batches.map(batch => ({
+              ...batch,
+              id: batch.id || generateBatchId(),
+              createdAt: new Date().toISOString(),
+              quantity: Number(batch.quantity) || 0
+            }));
+          }
+          
           validProducts.push(newProduct);
         } else {
           errors.push({
@@ -510,7 +466,7 @@ export class ProductOperations {
         PERFORMANCE_CONFIG.BATCH_SIZE
       );
 
-      // Cache products in bulk
+      // Cache products in bulk to PouchDB
       await CacheManager.cacheProducts(processedProducts);
 
       // Add to inventory state
@@ -523,13 +479,6 @@ export class ProductOperations {
           error: result.error
         });
       }
-
-      // Queue bulk remote sync
-      this.queueOperation({
-        type: 'BULK_CREATE',
-        products: processedProducts,
-        operationId
-      });
 
       console.log(`✅ Bulk creation completed: ${processedProducts.length} products created`);
       perfMonitor.end(`bulkCreateProducts_${operationId}`);
@@ -548,31 +497,122 @@ export class ProductOperations {
     }
   }
 
+  async bulkUpdateProducts(updates) {
+    const operationId = `bulk_update_${Date.now()}`;
+    perfMonitor.start(`bulkUpdateProducts_${operationId}`);
+    
+    try {
+      console.log(`🔄 Bulk updating ${updates.length} products...`);
+      
+      const results = [];
+      const updatedProducts = [];
+
+      for (const { productId, updates: productUpdates } of updates) {
+        try {
+          // Get current product from cache
+          let currentProduct = await CacheManager.getCachedProduct(productId);
+          if (!currentProduct) {
+            currentProduct = this.getState().getProductById(productId);
+          }
+          
+          if (!currentProduct) {
+            results.push({
+              productId,
+              success: false,
+              error: 'Product not found'
+            });
+            continue;
+          }
+
+          // Merge updates
+          const updatedProduct = {
+            ...currentProduct,
+            ...productUpdates,
+            _id: productId,
+            updatedAt: new Date().toISOString(),
+            version: (currentProduct.version || 1) + 1
+          };
+
+          // Validate updated product
+          const validation = validateProduct(updatedProduct);
+          if (!validation.isValid) {
+            results.push({
+              productId,
+              success: false,
+              error: `Validation failed: ${validation.errors.join(', ')}`
+            });
+            continue;
+          }
+
+          updatedProducts.push(updatedProduct);
+          results.push({
+            productId,
+            success: true,
+            product: updatedProduct
+          });
+
+        } catch (error) {
+          results.push({
+            productId,
+            success: false,
+            error: error.message
+          });
+        }
+      }
+
+      if (updatedProducts.length > 0) {
+        // Process through worker
+        const processedProducts = await processBatches(
+          updatedProducts,
+          async (batch) => await workerManager.executeTask('PROCESS_BATCH', { products: batch }),
+          PERFORMANCE_CONFIG.BATCH_SIZE
+        );
+
+        // Update PouchDB cache in bulk
+        await CacheManager.cacheProducts(processedProducts);
+
+        // Update inventory state
+        const state = this.getState();
+        for (const product of processedProducts) {
+          await state.updateProductInInventory(product);
+        }
+      }
+
+      console.log(`✅ Bulk update completed: ${updatedProducts.length} products updated`);
+      perfMonitor.end(`bulkUpdateProducts_${operationId}`);
+      
+      return { 
+        success: true, 
+        updated: updatedProducts.length,
+        results: results
+      };
+
+    } catch (error) {
+      console.error('❌ Error in bulk update:', error);
+      perfMonitor.end(`bulkUpdateProducts_${operationId}`);
+      return { success: false, error: error.message };
+    }
+  }
+
   // =================================================================
-  //  FETCH OPERATIONS WITH CACHE-FIRST STRATEGY
+  //  FETCH OPERATIONS - POUCHDB ONLY
   // =================================================================
 
   async fetchAllProducts() {
     perfMonitor.start('fetchAllProducts');
     
     try {
-      console.log('📡 Fetching all products from remote...');
+      console.log('📡 Fetching all products from PouchDB...');
       
-      const response = await axios.get(`${DB_URL}/_all_docs?include_docs=true`, DB_AUTH);
-      const products = response.data.rows
-        .filter(row => row.doc.type === 'product')
-        .map(row => {
-          const { _rev, type, ...product } = row.doc;
-          return product;
-        });
-
-      console.log(`✅ Fetched ${products.length} products from remote`);
+      const products = await CacheManager.getAllCachedProducts();
+      
+      console.log(`✅ Fetched ${products.length} products from PouchDB`);
       perfMonitor.end('fetchAllProducts');
       
       return products;
 
     } catch (error) {
-      console.error('❌ Error fetching products from remote:', error);
+      console.error('❌ Error fetching products from PouchDB:', error);
       perfMonitor.end('fetchAllProducts');
       throw error;
     }
@@ -580,114 +620,38 @@ export class ProductOperations {
 
   async fetchProductById(productId) {
     try {
-      // Try cache first
+      // Get from PouchDB cache
       const cachedProduct = await CacheManager.getCachedProduct(productId);
       if (cachedProduct) {
-        console.log(`📋 Product found in cache: ${productId}`);
+        console.log(`📋 Product found in PouchDB: ${productId}`);
         return cachedProduct;
       }
 
-      // Fetch from remote if not in cache
-      console.log(`📡 Fetching product from remote: ${productId}`);
-      const response = await axios.get(`${DB_URL}/${productId}`, DB_AUTH);
-      const { _rev, type, ...product } = response.data;
-
-      // Cache the fetched product
-      await CacheManager.cacheProduct(product);
-      
-      return product;
+      console.log(`📭 Product not found in PouchDB: ${productId}`);
+      return null;
 
     } catch (error) {
-      if (error.response?.status === 404) {
-        return null;
-      }
       console.error('❌ Error fetching product:', error);
       throw error;
     }
   }
 
   // =================================================================
-  //  OPERATION QUEUE AND REMOTE SYNC (UNCHANGED)
+  //  SEARCH OPERATIONS - POUCHDB ONLY
   // =================================================================
 
-  queueOperation(operation) {
-    this.operationQueue.push({
-      ...operation,
-      timestamp: Date.now(),
-      retries: 0
-    });
-
-    if (!this.isProcessingQueue) {
-      this.processOperationQueue();
-    }
-  }
-
-  async processOperationQueue() {
-    if (this.isProcessingQueue || this.operationQueue.length === 0) {
-      return;
-    }
-
-    this.isProcessingQueue = true;
-    console.log(`🔄 Processing ${this.operationQueue.length} queued operations...`);
-
-    while (this.operationQueue.length > 0) {
-      const operation = this.operationQueue.shift();
+  async searchProducts(query) {
+    try {
+      console.log(`🔍 Searching products in PouchDB: "${query}"`);
       
-      try {
-        await this.executeRemoteOperation(operation);
-        console.log(`✅ Remote operation completed: ${operation.type} - ${operation.operationId}`);
-      } catch (error) {
-        console.error(`❌ Remote operation failed: ${operation.type} - ${operation.operationId}`, error);
-        
-        if (operation.retries < PERFORMANCE_CONFIG.SYNC_RETRY_ATTEMPTS) {
-          operation.retries++;
-          this.operationQueue.push(operation);
-          console.log(`🔄 Retrying operation: ${operation.operationId} (attempt ${operation.retries})`);
-        } else {
-          console.error(`💀 Operation failed permanently: ${operation.operationId}`);
-        }
-      }
+      const results = await CacheManager.searchProductsOffline(query);
+      
+      console.log(`✅ Found ${results.length} products matching "${query}"`);
+      return { success: true, products: results };
 
-      await new Promise(resolve => setTimeout(resolve, 50));
-    }
-
-    this.isProcessingQueue = false;
-    console.log('✅ Operation queue processing completed');
-  }
-
-  async executeRemoteOperation(operation) {
-    const { type, productId, product, products } = operation;
-
-    switch (type) {
-      case 'CREATE':
-        return await withRetry(async () => {
-          await axios.post(DB_URL, product, DB_AUTH);
-        });
-
-      case 'UPDATE':
-        return await withRetry(async () => {
-          const currentDoc = await axios.get(`${DB_URL}/${productId}`, DB_AUTH);
-          const updatedProduct = {
-            ...product,
-            _rev: currentDoc.data._rev
-          };
-          await axios.put(`${DB_URL}/${productId}`, updatedProduct, DB_AUTH);
-        });
-
-      case 'DELETE':
-        return await withRetry(async () => {
-          const currentDoc = await axios.get(`${DB_URL}/${productId}`, DB_AUTH);
-          await axios.delete(`${DB_URL}/${productId}?rev=${currentDoc.data._rev}`, DB_AUTH);
-        });
-
-      case 'BULK_CREATE':
-        return await withRetry(async () => {
-          const docs = products.map(p => ({ ...p, type: 'product' }));
-          await axios.post(`${DB_URL}/_bulk_docs`, { docs }, DB_AUTH);
-        });
-
-      default:
-        throw new Error(`Unknown operation type: ${type}`);
+    } catch (error) {
+      console.error('❌ Error searching products:', error);
+      return { success: false, error: error.message, products: [] };
     }
   }
 
@@ -697,34 +661,48 @@ export class ProductOperations {
 
   getQueueStatus() {
     return {
-      queueLength: this.operationQueue.length,
-      isProcessing: this.isProcessingQueue,
+      queueLength: 0, // No queue in PouchDB-only mode
+      isProcessing: this.isProcessing,
       pendingOperations: this.pendingOperations.size,
-      nextOperation: this.operationQueue[0] || null
+      nextOperation: null // No queue in PouchDB-only mode
     };
   }
 
-  clearQueue() {
-    this.operationQueue.length = 0;
-    this.pendingOperations.clear();
-    this.isProcessingQueue = false;
-    console.log('🧹 Operation queue cleared');
-  }
-
-  async forceProcessQueue() {
-    if (this.isProcessingQueue) {
-      console.log('⚠️ Queue is already being processed');
-      return;
-    }
-    await this.processOperationQueue();
-  }
-
   cleanup() {
-    this.clearQueue();
+    this.pendingOperations.clear();
+    this.isProcessing = false;
+    
     if (workerManager) {
       workerManager.terminate();
     }
-    console.log('🧹 ProductOperations cleanup completed');
+    
+    console.log('🧹 ProductOperations cleanup completed (PouchDB-only)');
+  }
+
+  // =================================================================
+  //  POUCHDB HEALTH CHECK
+  // =================================================================
+
+  async checkHealth() {
+    try {
+      const health = await CacheManager.checkPouchDBHealth();
+      return {
+        healthy: health.healthy,
+        totalProducts: health.totalProducts || 0,
+        totalBatches: health.totalBatches || 0,
+        cacheSize: health.cacheSize || 0,
+        pendingOperations: this.pendingOperations.size,
+        isProcessing: this.isProcessing
+      };
+    } catch (error) {
+      console.error('❌ ProductOperations health check failed:', error);
+      return {
+        healthy: false,
+        error: error.message,
+        pendingOperations: this.pendingOperations.size,
+        isProcessing: this.isProcessing
+      };
+    }
   }
 }
 
