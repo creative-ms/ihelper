@@ -1,5 +1,5 @@
 // ===================================
-// src/utils/cache/databases.js - PouchDB with Complete Indexing
+// src/utils/cache/databases.js - PouchDB with Smart Index Management
 // ===================================
 import PouchDB from 'pouchdb-browser';
 import PouchDBFind from 'pouchdb-find';
@@ -43,6 +43,61 @@ export const heatmapDataDB = new PouchDB('pharmacy_heatmap_data');
 export const searchCacheDB = new PouchDB('pharmacy_search_cache');
 export const syncMetadataDB = new PouchDB('pharmacy_sync_metadata');
 export const dashboardMetadataDB = new PouchDB('pharmacy_dashboard_metadata');
+
+// =================================================================
+//  INITIALIZATION STATE MANAGEMENT
+// =================================================================
+
+let isInitialized = false;
+let initializationPromise = null;
+const INDEXES_VERSION = '1.0.0'; // Increment this when indexes change
+const VERSION_KEY = 'pharmacy_indexes_version';
+
+/**
+ * Check if indexes are already initialized for current version
+ */
+const checkIndexesVersion = async () => {
+  try {
+    const versionDoc = await syncMetadataDB.get(VERSION_KEY);
+    return versionDoc.version === INDEXES_VERSION;
+  } catch (error) {
+    if (error.name === 'not_found') {
+      return false;
+    }
+    console.warn('⚠️ Error checking indexes version:', error);
+    return false;
+  }
+};
+
+/**
+ * Save current indexes version
+ */
+const saveIndexesVersion = async () => {
+  try {
+    let versionDoc;
+    try {
+      versionDoc = await syncMetadataDB.get(VERSION_KEY);
+      versionDoc.version = INDEXES_VERSION;
+      versionDoc.updatedAt = new Date().toISOString();
+    } catch (error) {
+      if (error.name === 'not_found') {
+        versionDoc = {
+          _id: VERSION_KEY,
+          version: INDEXES_VERSION,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      } else {
+        throw error;
+      }
+    }
+    
+    await syncMetadataDB.put(versionDoc);
+    console.log(`✅ Indexes version ${INDEXES_VERSION} saved`);
+  } catch (error) {
+    console.error('❌ Error saving indexes version:', error);
+  }
+};
 
 // =================================================================
 //  INDEX DEFINITIONS
@@ -424,29 +479,51 @@ const INDEX_DEFINITIONS = {
 };
 
 // =================================================================
-//  INDEX CREATION FUNCTIONS
+//  SMART INDEX CREATION
 // =================================================================
 
 /**
- * Create indexes for a specific database
+ * Check if a specific index exists in a database
+ */
+const indexExists = async (database, indexName) => {
+  try {
+    const indexes = await database.getIndexes();
+    return indexes.indexes.some(idx => idx.name === indexName);
+  } catch (error) {
+    console.warn(`⚠️ Error checking index existence for ${indexName}:`, error);
+    return false;
+  }
+};
+
+/**
+ * Create indexes for a specific database (only if they don't exist)
  */
 const createIndexesForDatabase = async (database, indexes, dbName) => {
-  console.log(`🔄 Creating indexes for ${dbName}...`);
+  console.log(`🔄 Checking indexes for ${dbName}...`);
   
   const results = [];
+  let createdCount = 0;
+  let existingCount = 0;
+  
   for (const indexDef of indexes) {
     try {
-      const result = await database.createIndex(indexDef);
-      results.push({ 
-        name: indexDef.index.name, 
-        status: 'created',
-        result: result.result 
-      });
+      const exists = await indexExists(database, indexDef.index.name);
       
-      if (result.result === 'created') {
-        console.log(`✅ Index '${indexDef.index.name}' created for ${dbName}`);
+      if (exists) {
+        existingCount++;
+        results.push({ 
+          name: indexDef.index.name, 
+          status: 'exists'
+        });
       } else {
-        console.log(`ℹ️ Index '${indexDef.index.name}' already exists for ${dbName}`);
+        const result = await database.createIndex(indexDef);
+        createdCount++;
+        results.push({ 
+          name: indexDef.index.name, 
+          status: 'created',
+          result: result.result 
+        });
+        console.log(`✅ Index '${indexDef.index.name}' created for ${dbName}`);
       }
     } catch (error) {
       console.error(`❌ Failed to create index '${indexDef.index.name}' for ${dbName}:`, error);
@@ -458,75 +535,67 @@ const createIndexesForDatabase = async (database, indexes, dbName) => {
     }
   }
   
+  if (createdCount > 0) {
+    console.log(`✅ ${dbName}: Created ${createdCount} new indexes, ${existingCount} already existed`);
+  } else if (existingCount > 0) {
+    console.log(`ℹ️ ${dbName}: All ${existingCount} indexes already exist`);
+  }
+  
   return results;
 };
 
 /**
- * Create all indexes for all databases
+ * Create all indexes for all databases (with smart checking)
  */
-export const createAllIndexes = async () => {
-  console.log('🚀 Starting index creation for all databases...');
+export const createAllIndexes = async (force = false) => {
+  console.log('🚀 Starting smart index creation for all databases...');
+  
+  // Check if indexes are already up to date (unless forced)
+  if (!force) {
+    const isUpToDate = await checkIndexesVersion();
+    if (isUpToDate) {
+      console.log(`ℹ️ Indexes already up to date (version ${INDEXES_VERSION}), skipping creation`);
+      return { success: true, skipped: true, message: 'Indexes already up to date' };
+    }
+  }
   
   const indexResults = {};
+  let totalCreated = 0;
+  let totalExisting = 0;
   
   try {
     // Create indexes for each database
-    indexResults.products = await createIndexesForDatabase(
-      productsDB, 
-      INDEX_DEFINITIONS.products, 
-      'products'
-    );
+    const databases = [
+      { db: productsDB, name: 'products', indexes: INDEX_DEFINITIONS.products },
+      { db: purchasesDB, name: 'purchases', indexes: INDEX_DEFINITIONS.purchases },
+      { db: salesDB, name: 'sales', indexes: INDEX_DEFINITIONS.sales },
+      { db: customersDB, name: 'customers', indexes: INDEX_DEFINITIONS.customers },
+      { db: suppliersDB, name: 'suppliers', indexes: INDEX_DEFINITIONS.suppliers },
+      { db: transactionsDB, name: 'transactions', indexes: INDEX_DEFINITIONS.transactions },
+      { db: batchesDB, name: 'batches', indexes: INDEX_DEFINITIONS.batches },
+      { db: dashboardStatsDB, name: 'dashboardStats', indexes: INDEX_DEFINITIONS.dashboardStats },
+      { db: searchCacheDB, name: 'searchCache', indexes: INDEX_DEFINITIONS.searchCache }
+    ];
     
-    indexResults.purchases = await createIndexesForDatabase(
-      purchasesDB, 
-      INDEX_DEFINITIONS.purchases, 
-      'purchases'
-    );
+    for (const { db, name, indexes } of databases) {
+      const results = await createIndexesForDatabase(db, indexes, name);
+      indexResults[name] = results;
+      
+      totalCreated += results.filter(r => r.status === 'created').length;
+      totalExisting += results.filter(r => r.status === 'exists').length;
+    }
     
-    indexResults.sales = await createIndexesForDatabase(
-      salesDB, 
-      INDEX_DEFINITIONS.sales, 
-      'sales'
-    );
+    // Save the current version
+    await saveIndexesVersion();
     
-    indexResults.customers = await createIndexesForDatabase(
-      customersDB, 
-      INDEX_DEFINITIONS.customers, 
-      'customers'
-    );
-    
-    indexResults.suppliers = await createIndexesForDatabase(
-      suppliersDB, 
-      INDEX_DEFINITIONS.suppliers, 
-      'suppliers'
-    );
-    
-    indexResults.transactions = await createIndexesForDatabase(
-      transactionsDB, 
-      INDEX_DEFINITIONS.transactions, 
-      'transactions'
-    );
-    
-    indexResults.batches = await createIndexesForDatabase(
-      batchesDB, 
-      INDEX_DEFINITIONS.batches, 
-      'batches'
-    );
-    
-    indexResults.dashboardStats = await createIndexesForDatabase(
-      dashboardStatsDB, 
-      INDEX_DEFINITIONS.dashboardStats, 
-      'dashboardStats'
-    );
-    
-    indexResults.searchCache = await createIndexesForDatabase(
-      searchCacheDB, 
-      INDEX_DEFINITIONS.searchCache, 
-      'searchCache'
-    );
-    
-    console.log('✅ All database indexes created successfully!');
-    return { success: true, results: indexResults };
+    console.log(`✅ Index creation completed! Created: ${totalCreated}, Existing: ${totalExisting}`);
+    return { 
+      success: true, 
+      results: indexResults,
+      totalCreated,
+      totalExisting,
+      message: `Created ${totalCreated} new indexes, ${totalExisting} already existed`
+    };
     
   } catch (error) {
     console.error('❌ Error creating database indexes:', error);
@@ -613,8 +682,8 @@ export const rebuildAllIndexes = async () => {
       }
     }
     
-    // Recreate all indexes
-    const result = await createAllIndexes();
+    // Recreate all indexes (forced)
+    const result = await createAllIndexes(true);
     
     console.log('✅ All indexes rebuilt successfully!');
     return result;
@@ -645,25 +714,31 @@ const getDatabaseByName = (name) => {
 };
 
 /**
- * Initialize all databases with indexes
+ * Initialize all databases with indexes (smart initialization)
  */
 export const initializeDatabases = async () => {
+  if (isInitialized) {
+    console.log('ℹ️ Databases already initialized, skipping...');
+    return { success: true, message: 'Already initialized' };
+  }
+  
   console.log('🚀 Initializing all databases with indexes...');
   
   try {
-    // Create all indexes
+    // Create all indexes (with smart checking)
     const result = await createAllIndexes();
     
     if (result.success) {
-      console.log('✅ All databases initialized successfully with indexes!');
+      isInitialized = true;
       
-      // Log summary
-      const totalIndexes = Object.values(result.results)
-        .reduce((total, dbResults) => total + dbResults.length, 0);
+      if (result.skipped) {
+        console.log('ℹ️ Database initialization completed (indexes were up to date)');
+      } else {
+        console.log('✅ All databases initialized successfully with indexes!');
+        console.log(`📊 Summary: ${result.totalCreated} created, ${result.totalExisting} existing`);
+      }
       
-      console.log(`📊 Total indexes created: ${totalIndexes}`);
-      
-      return { success: true, message: 'Databases initialized successfully' };
+      return { success: true, message: 'Databases initialized successfully', ...result };
     } else {
       throw new Error(result.error);
     }
@@ -688,7 +763,8 @@ export const checkDatabaseHealth = async () => {
     databases: {},
     overall: 'healthy',
     totalIndexes: 0,
-    issues: []
+    issues: [],
+    indexesVersion: await checkIndexesVersion() ? INDEXES_VERSION : 'outdated'
   };
   
   const databases = [
@@ -742,26 +818,74 @@ export const checkDatabaseHealth = async () => {
 };
 
 // =================================================================
-//  AUTO-INITIALIZATION
+//  SMART INITIALIZATION CONTROL
 // =================================================================
 
-// Automatically initialize databases when this module is imported
-// This ensures indexes are created when the app starts
-let initializationPromise = null;
-
+/**
+ * Ensure indexes are created (with proper singleton pattern)
+ */
 export const ensureIndexes = async () => {
-  if (!initializationPromise) {
-    initializationPromise = initializeDatabases();
+  if (initializationPromise) {
+    return initializationPromise;
   }
+  
+  initializationPromise = initializeDatabases();
   return initializationPromise;
 };
 
-// Initialize on module load (but don't block)
-setTimeout(() => {
-  ensureIndexes().catch(error => {
-    console.error('❌ Auto-initialization failed:', error);
-  });
-}, 1000);
+/**
+ * Force index recreation (useful for development/debugging)
+ */
+export const forceIndexRecreation = async () => {
+  console.log('🔄 Forcing index recreation...');
+  isInitialized = false;
+  initializationPromise = null;
+  
+  const result = await createAllIndexes(true);
+  if (result.success) {
+    isInitialized = true;
+  }
+  
+  return result;
+};
+
+/**
+ * Reset initialization state (useful for testing)
+ */
+export const resetInitialization = () => {
+  isInitialized = false;
+  initializationPromise = null;
+  console.log('🔄 Database initialization state reset');
+};
+
+// =================================================================
+//  CONTROLLED AUTO-INITIALIZATION
+// =================================================================
+
+// Only auto-initialize in production or when explicitly requested
+const shouldAutoInitialize = () => {
+  // Check if we're in development mode
+  const isDev = process.env.NODE_ENV === 'development' || 
+                window.location.hostname === 'localhost' ||
+                window.location.hostname === '127.0.0.1';
+  
+  // Check for explicit initialization flag
+  const forceInit = localStorage.getItem('pharmacy_force_index_init') === 'true';
+  
+  return !isDev || forceInit;
+};
+
+// Auto-initialize with better control
+if (shouldAutoInitialize()) {
+  // Use a longer delay to avoid interfering with app startup
+  setTimeout(() => {
+    ensureIndexes().catch(error => {
+      console.error('❌ Auto-initialization failed:', error);
+    });
+  }, 2000); // Increased delay to 2 seconds
+} else {
+  console.log('ℹ️ Skipping auto-initialization in development mode');
+}
 
 // =================================================================
 //  EXPORT ALL DATABASES AND UTILITIES
@@ -798,7 +922,12 @@ export default {
   initializeDatabases,
   ensureIndexes,
   checkDatabaseHealth,
+  forceIndexRecreation,
+  resetInitialization,
   
   // Index definitions (for reference)
-  INDEX_DEFINITIONS
+  INDEX_DEFINITIONS,
+  
+  // Version info
+  INDEXES_VERSION
 };

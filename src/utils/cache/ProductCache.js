@@ -269,25 +269,37 @@ const ProductCache = {
   },
 
   async removeProductFromCache(productId) {
-    try {
-      // Remove product document
-      try {
-        const existingProduct = await productsDB.get(productId);
-        await productsDB.remove(existingProduct);
-      } catch (error) {
-        if (error.name !== 'not_found') throw error;
-      }
-      
-      // Remove all batches for this product
-      await this._removeProductBatches(productId);
-      
-      console.log(`✅ Removed product ${productId} from cache`);
-      return true;
-    } catch (error) {
-      console.error('Error removing product from cache:', error);
+  try {
+    // FIXED: Ensure productId is a string and validate it
+    if (!productId) {
+      console.error('removeProductFromCache: productId is required');
       return false;
     }
-  },
+    
+    const cleanProductId = String(productId).trim();
+    if (!cleanProductId) {
+      console.error('removeProductFromCache: invalid productId after cleaning:', productId);
+      return false;
+    }
+    
+    // Remove product document
+    try {
+      const existingProduct = await productsDB.get(cleanProductId);
+      await productsDB.remove(existingProduct);
+    } catch (error) {
+      if (error.name !== 'not_found') throw error;
+    }
+    
+    // Remove all batches for this product
+    await this._removeProductBatches(cleanProductId);
+    
+    console.log(`✅ Removed product ${cleanProductId} from cache`);
+    return true;
+  } catch (error) {
+    console.error('Error removing product from cache:', error);
+    return false;
+  }
+},
 
   async _updateProductDocument(productData) {
     try {
@@ -320,27 +332,29 @@ const ProductCache = {
   },
 
   async _removeProductBatches(productId) {
-    try {
-      const result = await batchesDB.allDocs({
-        include_docs: true,
-        startkey: `${productId}_`,
-        endkey: `${productId}_\ufff0`
-      });
+  try {
+    const cleanProductId = String(productId).trim();
+    
+    const result = await batchesDB.allDocs({
+      include_docs: true,
+      startkey: `${cleanProductId}_`,
+      endkey: `${cleanProductId}_\ufff0`
+    });
+    
+    if (result.rows.length > 0) {
+      const batchesToDelete = result.rows.map(row => ({
+        _id: row.doc._id,
+        _rev: row.doc._rev,
+        _deleted: true
+      }));
       
-      if (result.rows.length > 0) {
-        const batchesToDelete = result.rows.map(row => ({
-          _id: row.doc._id,
-          _rev: row.doc._rev,
-          _deleted: true
-        }));
-        
-        await batchesDB.bulkDocs(batchesToDelete);
-      }
-    } catch (error) {
-      console.error('Error removing product batches:', error);
-      throw error;
+      await batchesDB.bulkDocs(batchesToDelete);
     }
-  },
+  } catch (error) {
+    console.error('Error removing product batches:', error);
+    throw error;
+  }
+},
 
   async _getBatchesForProduct(productId) {
     try {
