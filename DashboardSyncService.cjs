@@ -1,4 +1,4 @@
-// DashboardSyncService.cjs - FIXED DATA GENERATION VERSION
+// DashboardSyncService.cjs - FIXED VERSION
 const configManager = require('./config-manager.cjs');
 const axios = require('axios');
 
@@ -41,135 +41,121 @@ class DashboardSyncService {
         console.log('🌐 Target CouchDB:', this.DASHBOARD_DB_URL);
     }
 
-    // FIXED: Generate current summary with proper data fetching
+    // FIXED: Generate current summary with better error handling and fallbacks
     async generateCurrentSummary() {
         try {
-            console.log('🔍 Checking database manager initialization...');
-            if (!this.localDbManager || !this.localDbManager.isInitialized) {
-                console.log('❌ Local database not initialized');
-                return null;
-            }
-
-            console.log('✅ Database manager is initialized');
-
+            console.log('🔍 Starting summary generation...');
+            
+            // FIXED: Don't return null immediately, try to work with what we have
             const now = new Date();
             const currentTimestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`;
             
-            // Get store configuration
-            let storeConfig;
+            // Initialize with defaults
+            let storeId = 'default-store';
+            let storeName = 'Default Store';
+            
+            // Try to get store info but don't fail if unavailable
             try {
-                storeConfig = this.localDbManager.loadStoreConfig();
-                console.log('📊 Store config loaded:', { storeId: storeConfig?.storeId, storeName: storeConfig?.storeName });
+                if (this.localDbManager && this.localDbManager.currentStoreId) {
+                    storeId = this.localDbManager.currentStoreId;
+                    console.log('📊 Using current store ID:', storeId);
+                }
+                
+                if (this.localDbManager && typeof this.localDbManager.loadStoreConfig === 'function') {
+                    const storeConfig = this.localDbManager.loadStoreConfig();
+                    if (storeConfig && storeConfig.storeName) {
+                        storeName = storeConfig.storeName;
+                        console.log('📊 Store config loaded:', { storeId, storeName });
+                    }
+                }
             } catch (configError) {
-                console.warn('⚠️ Could not load store config:', configError);
-                storeConfig = null;
+                console.warn('⚠️ Store config unavailable, using defaults:', configError.message);
             }
-
-            const storeId = storeConfig?.storeId || this.localDbManager.currentStoreId || 'unknown';
-            const storeName = storeConfig?.storeName || 'Unknown Store';
 
             console.log(`📊 Generating summary for store: ${storeName} (${storeId})`);
 
-            // FIXED: Expanded time range to get more data
+            // Set time range - last 24 hours for better data capture
             const periodStart = new Date(now);
-            periodStart.setHours(periodStart.getHours() - 24); // Last 24 hours instead of 5 minutes
-            
+            periodStart.setHours(periodStart.getHours() - 24);
             const periodEnd = new Date(now);
 
             console.log(`📊 Data period: ${periodStart.toISOString()} to ${periodEnd.toISOString()}`);
 
-            // FIXED: Better database access with error handling
+            // Initialize data arrays
             let salesData = [];
             let customersData = [];
             let suppliersData = [];
             let purchasesData = [];
 
-            try {
-                console.log('🔍 Fetching sales data...');
-                const salesDb = this.localDbManager.getDatabase('sales');
-                if (salesDb) {
-                    const salesResult = await salesDb.find({
+            // FIXED: Robust database access with multiple fallback strategies
+            if (this.localDbManager) {
+                console.log('📊 Database manager available, fetching data...');
+                
+                // Try to fetch sales data with multiple fallback strategies
+                salesData = await this.fetchDataWithFallbacks('sales', {
+                    primary: {
                         selector: {
-                            $or: [
-                                { createdAt: { $gte: periodStart.toISOString(), $lte: periodEnd.toISOString() } },
-                                { _id: { $gte: null } } // Fallback to get any sales
+                            $and: [
+                                { createdAt: { $gte: periodStart.toISOString() } },
+                                { createdAt: { $lte: periodEnd.toISOString() } }
                             ]
                         },
                         limit: 1000
-                    });
-                    salesData = salesResult.docs || [];
-                    console.log(`📊 Found ${salesData.length} sales records`);
-                } else {
-                    console.warn('⚠️ Sales database not available');
-                }
-            } catch (salesError) {
-                console.error('❌ Error fetching sales:', salesError);
-                // Try simpler query as fallback
-                try {
-                    const salesDb = this.localDbManager.getDatabase('sales');
-                    const fallbackResult = await salesDb.allDocs({ include_docs: true, limit: 100 });
-                    salesData = fallbackResult.rows.map(row => row.doc).filter(doc => doc && !doc._id.startsWith('_design'));
-                    console.log(`📊 Fallback: Found ${salesData.length} sales records`);
-                } catch (fallbackError) {
-                    console.error('❌ Fallback sales query failed:', fallbackError);
-                }
-            }
+                    },
+                    fallback1: {
+                        selector: { _id: { $gte: null } },
+                        limit: 500,
+                        sort: [{ createdAt: 'desc' }]
+                    },
+                    fallback2: { limit: 100 }
+                });
 
-            try {
-                console.log('🔍 Fetching customers data...');
-                const customersDb = this.localDbManager.getDatabase('customers');
-                if (customersDb) {
-                    const customersResult = await customersDb.find({
+                // Try to fetch customers data
+                customersData = await this.fetchDataWithFallbacks('customers', {
+                    primary: {
                         selector: { _id: { $gte: null } },
                         limit: 500
-                    });
-                    customersData = customersResult.docs || [];
-                    console.log(`📊 Found ${customersData.length} customer records`);
-                } else {
-                    console.warn('⚠️ Customers database not available');
-                }
-            } catch (customersError) {
-                console.error('❌ Error fetching customers:', customersError);
-            }
+                    },
+                    fallback1: { limit: 100 }
+                });
 
-            try {
-                console.log('🔍 Fetching suppliers data...');
-                const suppliersDb = this.localDbManager.getDatabase('suppliers');
-                if (suppliersDb) {
-                    const suppliersResult = await suppliersDb.find({
+                // Try to fetch suppliers data
+                suppliersData = await this.fetchDataWithFallbacks('suppliers', {
+                    primary: {
                         selector: { _id: { $gte: null } },
                         limit: 100
-                    });
-                    suppliersData = suppliersResult.docs || [];
-                    console.log(`📊 Found ${suppliersData.length} supplier records`);
-                } else {
-                    console.warn('⚠️ Suppliers database not available');
-                }
-            } catch (suppliersError) {
-                console.error('❌ Error fetching suppliers:', suppliersError);
-            }
+                    },
+                    fallback1: { limit: 50 }
+                });
 
-            try {
-                console.log('🔍 Fetching purchases data...');
-                const purchasesDb = this.localDbManager.getDatabase('purchases');
-                if (purchasesDb) {
-                    const purchasesResult = await purchasesDb.find({
+                // Try to fetch purchases data
+                purchasesData = await this.fetchDataWithFallbacks('purchases', {
+                    primary: {
                         selector: {
-                            $or: [
-                                { createdAt: { $gte: periodStart.toISOString(), $lte: periodEnd.toISOString() } },
-                                { _id: { $gte: null } } // Fallback to get any purchases
+                            $and: [
+                                { createdAt: { $gte: periodStart.toISOString() } },
+                                { createdAt: { $lte: periodEnd.toISOString() } }
                             ]
                         },
                         limit: 500
-                    });
-                    purchasesData = purchasesResult.docs || [];
-                    console.log(`📊 Found ${purchasesData.length} purchase records`);
-                } else {
-                    console.warn('⚠️ Purchases database not available');
-                }
-            } catch (purchasesError) {
-                console.error('❌ Error fetching purchases:', purchasesError);
+                    },
+                    fallback1: {
+                        selector: { _id: { $gte: null } },
+                        limit: 250,
+                        sort: [{ createdAt: 'desc' }]
+                    },
+                    fallback2: { limit: 100 }
+                });
+            } else {
+                console.warn('⚠️ No database manager available, creating summary with zero data');
             }
+
+            console.log('📊 Data fetched:', {
+                sales: salesData.length,
+                customers: customersData.length,
+                suppliers: suppliersData.length,
+                purchases: purchasesData.length
+            });
 
             // Calculate summary metrics
             const summary = this.calculateCurrentMetrics(salesData, customersData, suppliersData, purchasesData);
@@ -181,7 +167,7 @@ class DashboardSyncService {
                 itemsSold: summary.itemsSold
             });
 
-            // Create the summary document - ALWAYS CREATE ONE EVEN WITH NO DATA
+            // Create the summary document - ALWAYS CREATE ONE
             const summaryDoc = {
                 _id: `summary-${currentTimestamp}`,
                 storeId: storeId,
@@ -202,11 +188,10 @@ class DashboardSyncService {
                     },
                     generatedAt: now.toISOString(),
                     version: '1.0-testing',
-                    // Add debug info
                     debug: {
-                        dbManagerInitialized: this.localDbManager.isInitialized,
-                        currentStoreId: this.localDbManager.currentStoreId,
-                        hasStoreConfig: !!storeConfig
+                        hasDbManager: !!this.localDbManager,
+                        dbManagerInitialized: this.localDbManager ? this.localDbManager.isInitialized : false,
+                        currentStoreId: this.localDbManager ? this.localDbManager.currentStoreId : null
                     }
                 }
             };
@@ -217,15 +202,15 @@ class DashboardSyncService {
             return summaryDoc;
 
         } catch (error) {
-            console.error('❌ Error generating current summary:', error);
+            console.error('❌ Error generating summary:', error);
             
-            // FIXED: Return a basic summary even on error to ensure sync continues
+            // ALWAYS return a valid summary document even on complete failure
             const now = new Date();
             const currentTimestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}-${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`;
             
             return {
                 _id: `summary-error-${currentTimestamp}`,
-                storeId: 'error',
+                storeId: 'error-state',
                 storeName: 'Error State',
                 timestamp: currentTimestamp,
                 period: {
@@ -252,13 +237,77 @@ class DashboardSyncService {
                     dataPoints: { sales: 0, customers: 0, suppliers: 0, purchases: 0 },
                     generatedAt: now.toISOString(),
                     version: '1.0-testing-error',
-                    error: error.message
+                    error: error.message,
+                    debug: {
+                        hasDbManager: !!this.localDbManager,
+                        dbManagerInitialized: this.localDbManager ? this.localDbManager.isInitialized : false,
+                        currentStoreId: this.localDbManager ? this.localDbManager.currentStoreId : null
+                    }
                 }
             };
         }
     }
 
-    // Calculate metrics from raw data (FIXED calculations)
+    // NEW: Robust data fetching with multiple fallback strategies
+    async fetchDataWithFallbacks(collectionName, strategies) {
+        if (!this.localDbManager) {
+            console.log(`⚠️ No database manager for ${collectionName}`);
+            return [];
+        }
+
+        const strategyNames = ['primary', 'fallback1', 'fallback2'];
+        
+        for (const strategyName of strategyNames) {
+            if (!strategies[strategyName]) continue;
+            
+            try {
+                console.log(`🔍 Fetching ${collectionName} data (${strategyName})...`);
+                
+                const db = this.localDbManager.getDatabase(collectionName);
+                if (!db) {
+                    console.warn(`⚠️ ${collectionName} database not available`);
+                    continue;
+                }
+
+                let result;
+                const strategy = strategies[strategyName];
+                
+                if (strategy.selector) {
+                    // Use find() method
+                    result = await db.find(strategy);
+                } else {
+                    // Use allDocs() method
+                    const allDocsOptions = {
+                        include_docs: true,
+                        ...strategy
+                    };
+                    const allDocsResult = await db.allDocs(allDocsOptions);
+                    result = {
+                        docs: allDocsResult.rows
+                            .map(row => row.doc)
+                            .filter(doc => doc && !doc._id.startsWith('_design'))
+                    };
+                }
+                
+                const docs = result.docs || [];
+                console.log(`📊 ${collectionName}: ${docs.length} records (${strategyName})`);
+                
+                // Return result if we got any data, or if this was the last strategy
+                if (docs.length > 0 || strategyName === 'fallback2') {
+                    return docs;
+                }
+                
+            } catch (error) {
+                console.warn(`⚠️ ${collectionName} ${strategyName} failed:`, error.message);
+                // Continue to next strategy
+            }
+        }
+        
+        console.log(`⚠️ All strategies failed for ${collectionName}, returning empty array`);
+        return [];
+    }
+
+    // Calculate metrics from raw data (unchanged but with better logging)
     calculateCurrentMetrics(sales, customers, suppliers, purchases) {
         console.log('🔢 Calculating metrics from data:', {
             salesCount: sales.length,
@@ -279,7 +328,8 @@ class DashboardSyncService {
         let totalPurchases = 0;
 
         // Process sales data
-        if (Array.isArray(sales)) {
+        if (Array.isArray(sales) && sales.length > 0) {
+            console.log('💰 Processing sales data...');
             sales.forEach((sale, index) => {
                 try {
                     if (sale.type === 'SALE') {
@@ -300,7 +350,9 @@ class DashboardSyncService {
                             itemsSold += this.safeNumeric(sale.itemCount);
                         }
                         
-                        console.log(`Sale ${index + 1}: Revenue=${saleTotal}, Profit=${saleProfit}, Items=${Array.isArray(sale.items) ? sale.items.length : 0}`);
+                        if (index < 5) { // Log first 5 sales
+                            console.log(`  Sale ${index + 1}: Revenue=${saleTotal}, Profit=${saleProfit}`);
+                        }
                         
                     } else if (sale.type === 'RETURN') {
                         const returnValue = Math.abs(this.safeNumeric(sale.totalReturnValue || sale.total));
@@ -317,13 +369,14 @@ class DashboardSyncService {
                         }
                     }
                 } catch (saleError) {
-                    console.warn(`⚠️ Error processing sale ${index}:`, saleError);
+                    console.warn(`⚠️ Error processing sale ${index}:`, saleError.message);
                 }
             });
         }
 
         // Process purchases data
-        if (Array.isArray(purchases)) {
+        if (Array.isArray(purchases) && purchases.length > 0) {
+            console.log('🛒 Processing purchases data...');
             purchases.forEach((purchase, index) => {
                 try {
                     if (purchase.type === 'PURCHASE') {
@@ -338,7 +391,9 @@ class DashboardSyncService {
                         totalPurchases += purchaseTotal;
                         cashOutflow += amountPaid;
                         
-                        console.log(`Purchase ${index + 1}: Total=${purchaseTotal}, Paid=${amountPaid}`);
+                        if (index < 5) { // Log first 5 purchases
+                            console.log(`  Purchase ${index + 1}: Total=${purchaseTotal}, Paid=${amountPaid}`);
+                        }
                         
                     } else if (purchase.type === 'PURCHASE_RETURN') {
                         const returnValue = this.safeNumeric(purchase.totalReturnValue || purchase.total);
@@ -350,7 +405,7 @@ class DashboardSyncService {
                         }
                     }
                 } catch (purchaseError) {
-                    console.warn(`⚠️ Error processing purchase ${index}:`, purchaseError);
+                    console.warn(`⚠️ Error processing purchase ${index}:`, purchaseError.message);
                 }
             });
         }
@@ -358,7 +413,8 @@ class DashboardSyncService {
         // Calculate customer balances
         let dueByCustomers = 0;
         let customerStoreCredit = 0;
-        if (Array.isArray(customers)) {
+        if (Array.isArray(customers) && customers.length > 0) {
+            console.log('👥 Processing customer balances...');
             customers.forEach((customer, index) => {
                 try {
                     const balance = this.safeNumeric(customer.balance);
@@ -368,7 +424,7 @@ class DashboardSyncService {
                         customerStoreCredit += Math.abs(balance);
                     }
                 } catch (customerError) {
-                    console.warn(`⚠️ Error processing customer ${index}:`, customerError);
+                    console.warn(`⚠️ Error processing customer ${index}:`, customerError.message);
                 }
             });
         }
@@ -376,7 +432,8 @@ class DashboardSyncService {
         // Calculate supplier balances
         let payableToSuppliers = 0;
         let creditWithSuppliers = 0;
-        if (Array.isArray(suppliers)) {
+        if (Array.isArray(suppliers) && suppliers.length > 0) {
+            console.log('🏢 Processing supplier balances...');
             suppliers.forEach((supplier, index) => {
                 try {
                     const balance = this.safeNumeric(supplier.balance);
@@ -386,7 +443,7 @@ class DashboardSyncService {
                         creditWithSuppliers += Math.abs(balance);
                     }
                 } catch (supplierError) {
-                    console.warn(`⚠️ Error processing supplier ${index}:`, supplierError);
+                    console.warn(`⚠️ Error processing supplier ${index}:`, supplierError.message);
                 }
             });
         }
@@ -413,11 +470,17 @@ class DashboardSyncService {
             supplierReturns: Math.max(0, supplierReturns)
         };
 
-        console.log('🔢 Final calculated metrics:', calculatedMetrics);
+        console.log('🔢 Final calculated metrics:', {
+            totalRevenue: calculatedMetrics.totalRevenue,
+            totalProfit: calculatedMetrics.totalProfit,
+            totalSales: calculatedMetrics.totalSales,
+            netCashFlow: calculatedMetrics.netCashFlow
+        });
+
         return calculatedMetrics;
     }
 
-    // Rest of your methods remain the same...
+    // Safe numeric conversion
     safeNumeric(value, defaultValue = 0) {
         if (typeof value === 'number') return isNaN(value) ? defaultValue : value;
         if (value === null || value === undefined) return defaultValue;
@@ -425,7 +488,7 @@ class DashboardSyncService {
         return isNaN(num) ? defaultValue : num;
     }
 
-    // Start, stop, performSync, and other methods remain unchanged...
+    // Start sync service
     start() {
         if (this.isRunning) {
             console.log('⚠️ Dashboard sync already running');
@@ -435,10 +498,12 @@ class DashboardSyncService {
         this.isRunning = true;
         console.log(`🚀 Starting dashboard sync every ${this.SYNC_INTERVAL_DISPLAY}...`);
         
-        // Initial sync
-        this.performSync();
+        // Initial sync after a short delay
+        setTimeout(() => {
+            this.performSync();
+        }, 5000); // 5 second delay for initial sync
         
-        // Schedule frequent syncs for testing
+        // Schedule periodic syncs
         this.syncInterval = setInterval(() => {
             this.performSync();
         }, this.SYNC_INTERVAL_MS);
@@ -446,6 +511,7 @@ class DashboardSyncService {
         console.log(`✅ Dashboard sync started - syncing every ${this.SYNC_INTERVAL_DISPLAY}`);
     }
 
+    // Stop sync service
     stop() {
         if (this.syncInterval) {
             clearInterval(this.syncInterval);
@@ -455,6 +521,7 @@ class DashboardSyncService {
         console.log('⏹️ Dashboard sync stopped');
     }
 
+    // Perform sync operation
     async performSync() {
         try {
             console.log(`🔄 Starting dashboard sync (${this.SYNC_INTERVAL_DISPLAY} interval)...`);
@@ -462,9 +529,10 @@ class DashboardSyncService {
 
             const summary = await this.generateCurrentSummary();
             
+            // FIXED: Never skip sync - always upload summary
             if (!summary) {
-                console.log('⚠️ No summary generated - skipping sync');
-                return { success: true, skipped: true };
+                console.error('❌ Failed to generate summary - this should not happen');
+                return { success: false, error: 'Failed to generate summary' };
             }
 
             await this.ensureDatabaseExists();
@@ -476,16 +544,20 @@ class DashboardSyncService {
             
             console.log(`✅ Dashboard sync completed in ${duration}ms`);
             console.log(`📊 Synced summary: ${summary._id}`);
+            console.log(`📈 Data: ${summary.totalSales} sales, ${summary.totalRevenue} revenue`);
             
+            // Clear any previous errors on successful sync
             if (this.syncErrors.length > 0) {
                 this.syncErrors = [];
+                console.log('✅ Previous sync errors cleared after successful sync');
             }
 
             return { 
                 success: true, 
                 summaryId: summary._id,
                 duration,
-                lastSyncTime: this.lastSyncTime 
+                lastSyncTime: this.lastSyncTime,
+                dataPoints: summary.metadata.dataPoints
             };
 
         } catch (error) {
@@ -494,9 +566,10 @@ class DashboardSyncService {
             this.syncErrors.push({
                 error: error.message,
                 timestamp: new Date().toISOString(),
-                stack: error.stack
+                stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
             });
             
+            // Keep only last 10 errors
             if (this.syncErrors.length > 10) {
                 this.syncErrors = this.syncErrors.slice(-10);
             }
@@ -505,6 +578,7 @@ class DashboardSyncService {
         }
     }
 
+    // Ensure CouchDB database exists
     async ensureDatabaseExists() {
         try {
             const response = await axios.get(this.DASHBOARD_DB_URL, this.dbAuth);
@@ -527,6 +601,7 @@ class DashboardSyncService {
         }
     }
 
+    // Upload summary to CouchDB
     async uploadSummary(summary) {
         try {
             const url = `${this.DASHBOARD_DB_URL}/${summary._id}`;
@@ -561,6 +636,7 @@ class DashboardSyncService {
         }
     }
 
+    // Clean up old summaries (keep latest 100)
     async cleanupOldSummaries() {
         try {
             const allDocsUrl = `${this.DASHBOARD_DB_URL}/_all_docs?startkey="${encodeURIComponent('summary-')}"&include_docs=false&limit=1000`;
@@ -589,7 +665,9 @@ class DashboardSyncService {
                 
                 const deletePromises = batch.map(doc => {
                     const deleteUrl = `${this.DASHBOARD_DB_URL}/${doc.id}?rev=${doc.value.rev}`;
-                    return axios.delete(deleteUrl, this.dbAuth);
+                    return axios.delete(deleteUrl, this.dbAuth).catch(err => {
+                        console.warn(`⚠️ Failed to delete ${doc.id}:`, err.message);
+                    });
                 });
 
                 await Promise.all(deletePromises);
@@ -603,11 +681,13 @@ class DashboardSyncService {
         }
     }
 
+    // Manual sync trigger
     async triggerManualSync() {
         console.log('🔄 Manual sync triggered (testing mode)');
         return await this.performSync();
     }
 
+    // Get current sync status
     getSyncStatus() {
         const nextSyncTime = this.isRunning && this.lastSyncTime ? 
             new Date(new Date(this.lastSyncTime).getTime() + this.SYNC_INTERVAL_MS).toISOString() : null;
@@ -624,6 +704,7 @@ class DashboardSyncService {
         };
     }
 
+    // Get sync statistics
     getSyncStats() {
         const now = new Date();
         
@@ -641,6 +722,7 @@ class DashboardSyncService {
         };
     }
 
+    // Switch to production mode (1 hour intervals)
     switchToProductionMode() {
         console.log('🔄 Switching to production mode...');
         
@@ -661,6 +743,7 @@ class DashboardSyncService {
         return { success: true, interval: this.SYNC_INTERVAL_DISPLAY };
     }
 
+    // Set custom test interval
     setTestInterval(seconds) {
         console.log(`🔄 Setting test interval to ${seconds} seconds...`);
         
@@ -681,6 +764,7 @@ class DashboardSyncService {
         return { success: true, interval: this.SYNC_INTERVAL_DISPLAY };
     }
 
+    // Shutdown sync service
     shutdown() {
         this.stop();
         console.log('✅ Dashboard sync service shutdown complete');
